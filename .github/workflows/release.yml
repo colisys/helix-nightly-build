@@ -98,6 +98,14 @@ jobs:
       - name: Check out builder
         uses: actions/checkout@v4
 
+      - name: Check out Helix source
+        uses: actions/checkout@v4
+        with:
+          repository: helix-editor/helix
+          ref: ${{ env.HELIX_REF }}
+          path: .helix-source
+          fetch-depth: 1
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -199,6 +207,13 @@ jobs:
           name: helix-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+
+      - name: Create upstream build marker
+        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          mkdir -p /tmp/helix-built-marker
+          echo "${{ needs.check.outputs.upstream_sha }}" > /tmp/helix-built-marker/sha
 
       - name: Mark upstream SHA as built
         if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'

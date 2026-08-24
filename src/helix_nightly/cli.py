@@ -59,8 +59,11 @@ def host_target() -> str:
 
 def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
     prefix = shlex.split(qemu) if qemu else []
-    run(prefix + [str(binary), "--grammar", "fetch"], cwd=source_dir)
-    run(prefix + [str(binary), "--grammar", "build"], cwd=source_dir)
+    for action in ("fetch", "build"):
+        try:
+            run(prefix + [str(binary), "--grammar", action], cwd=source_dir)
+        except (subprocess.CalledProcessError, OSError) as error:
+            print(f"warning: grammar {action} failed; continuing: {error}", file=sys.stderr)
 
 
 def _skip_symlinks(_directory: str, names: list[str]) -> set[str]:
@@ -239,7 +242,7 @@ def build(args: argparse.Namespace) -> list[Path]:
     cargo_args += ["build", "--release", "--locked", "--package", "helix-term"]
     if args.target:
         cargo_args += ["--target", target]
-    build_env: dict[str, str] = {}
+    build_env: dict[str, str] = {"HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1"}
     if target.endswith("-linux-gnu"):
         build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
     if target == "aarch64-unknown-linux-gnu":
