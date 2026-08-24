@@ -1,5 +1,7 @@
 # Helix nightly build
 
+[![Build and release Helix nightly](https://github.com/colisys/helix-nightly-build/actions/workflows/release.yml/badge.svg)](https://github.com/colisys/helix-nightly-build/actions/workflows/release.yml)
+
 This project builds the upstream [Helix](https://github.com/helix-editor/helix) repository and publishes platform packages as a GitHub Release.
 
 ## Formats and targets
@@ -10,7 +12,7 @@ The workflow builds:
 - Linux `aarch64-unknown-linux-gnu` (arm64): `.deb`, `.rpm`, `.tar.gz`
 - Windows `x86_64-pc-windows-msvc`: Inno Setup `.exe` installer, WiX `.msi` installer, `.zip`
 
-Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup installer, while the `.msi` is a WiX installer. Both include the native `hx.exe` and the `runtime` directory. Linux packages are produced with `nfpm`.
+Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup installer, while the `.msi` is a WiX installer. Both include the native `hx.exe` and the `runtime` directory. Linux packages are produced with `nfpm`; the workflow follows the official installation method `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest` and invokes `nfpm pkg --packager deb|rpm`. See the [nfpm Quick Start](https://nfpm.goreleaser.com/docs/quick-start/).
 
 ## Build-time grammar generation
 
@@ -56,6 +58,6 @@ Options:
 
 ## GitHub Actions
 
-Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs daily and publishes a prerelease tagged `nightly-YYYYMMDD`. Manual runs can select the Helix ref and release tag, or set `publish` to false to only build artifacts.
+Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs daily, creates an annotated Git tag such as `nightly-YYYYMMDD`, and publishes a prerelease using that tag. Manual runs can select the Helix ref and release tag, or set `publish` to false to only build artifacts. If a selected tag already exists, the workflow reuses it and updates the Release assets without force-moving the tag.
 
 The ARM64 Linux build is cross-compiled and uses QEMU for target-architecture grammar generation. On current Ubuntu releases, `qemu-user-static` is a virtual package; install its concrete provider `qemu-user-binfmt` (or `qemu-user-binfmt-hwe` on HWE systems). QEMU user-mode emulation is not a full ARM virtual machine; if future Helix build steps require kernel features or services unavailable under user-mode QEMU, use an ARM64 self-hosted runner instead.

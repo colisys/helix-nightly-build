@@ -54,20 +54,26 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Rust target
-        shell: bash
-        run: |
-          rustup target add "${{ matrix.target }}"
-          rustup target list --installed
-          ls "$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/lib/libcore-"*.rlib >/dev/null
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-binfmt
-          curl -fsSL https://nfpm.goreleaser.com/install.sh | sh -s -- -d "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install nfpm
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build nfpm from the official Go module
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/nfpm" --version
 
       - name: Install Windows packagers
         if: runner.os == 'Windows'
@@ -111,6 +117,11 @@ jobs:
     if: github.event_name == 'schedule' || inputs.publish == true
     runs-on: ubuntu-22.04
     steps:
+      - name: Check out release repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
@@ -125,6 +136,20 @@ jobs:
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
             echo "tag=nightly-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Git tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists; reusing it."
+          else
+            git tag --annotate "${RELEASE_TAG}" "${GITHUB_SHA}" --message "Helix nightly ${RELEASE_TAG}"
+            git push origin "refs/tags/${RELEASE_TAG}"
           fi
 
       - name: Publish release

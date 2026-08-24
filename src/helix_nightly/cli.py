@@ -10,16 +10,28 @@ import sys
 import tarfile
 import tempfile
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 DEFAULT_REPO = "https://github.com/helix-editor/helix.git"
 
 
-def run(command: Sequence[str], cwd: Path | None = None) -> str:
+def run(
+    command: Sequence[str],
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
     print("+", " ".join(command))
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
     result = subprocess.run(
-        command, cwd=cwd, check=True, text=True, stdout=subprocess.PIPE
+        command,
+        cwd=cwd,
+        env=process_env,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
     )
     return result.stdout.strip()
 
@@ -87,14 +99,31 @@ def make_nfpm(staging: Path, output_dir: Path, target: str, version: str, fmt: s
     arch = "arm64" if target.startswith(("aarch64", "arm64")) else "amd64"
     path = output_dir / f"helix-{version}-{target}.{fmt}"
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as config:
-        config.write(f"name: helix\narch: {arch}\nplatform: linux\nversion: 0.0.0-{version}\n")
-        config.write("maintainer: Helix nightly builder\ndescription: Helix editor nightly build\n")
-        config.write("contents:\n")
-        config.write(f"  - src: {binary}\n    dst: /usr/bin/hx\n    file_info:\n      mode: 0755\n")
-        config.write(f"  - src: {root / 'runtime'}\n    dst: /usr/lib/helix/runtime\n")
+        config.write(
+            f"name: helix\narch: {arch}\nplatform: linux\n"
+            f"version: 0.0.0\nversion_metadata: {version}\n"
+        )
+        config.write(
+            "maintainer: Helix nightly builder\n"
+            "description: Helix editor nightly build\n"
+            "homepage: https://helix-editor.com\n"
+            "license: MPL-2.0\n"
+            "contents:\n"
+        )
+        config.write(
+            f"  - src: {binary}\n"
+            "    dst: /usr/bin/hx\n"
+            "    file_info:\n"
+            "      mode: 0755\n"
+        )
+        config.write(
+            f"  - src: {root / 'runtime'}\n"
+            "    dst: /usr/lib/helix/runtime\n"
+            "    type: tree\n"
+        )
         config_path = Path(config.name)
     try:
-        run(["nfpm", "package", "--packager", fmt, "--target", str(path), "--config", str(config_path)])
+        run(["nfpm", "pkg", "--packager", fmt, "--target", str(path), "--config", str(config_path)])
     finally:
         config_path.unlink(missing_ok=True)
     return path
@@ -173,10 +202,29 @@ def build(args: argparse.Namespace) -> list[Path]:
     checkout(args.repo, args.ref, source_dir)
     version = run(["git", "rev-parse", "--short=12", "HEAD"], cwd=source_dir)
     target = args.target or host_target()
-    cargo_args = ["cargo", "build", "--release", "--locked", "--package", "helix-term"]
+    toolchain: str | None = None
+    if args.target:
+        # Helix may provide rust-toolchain.toml. Install the target in the
+        # toolchain selected from the source directory, not the builder root.
+        active = run(["rustup", "show", "active-toolchain"], cwd=source_dir)
+        toolchain = active.split()[0]
+        run(["rustup", "target", "add", "--toolchain", toolchain, target], cwd=source_dir)
+        sysroot = Path(run(["rustc", "+" + toolchain, "--print", "sysroot"], cwd=source_dir))
+        target_lib = sysroot / "lib" / "rustlib" / target / "lib"
+        if not any(target_lib.glob("libcore-*.rlib")):
+            raise RuntimeError(
+                f"Rust target {target} is not installed for {toolchain} in {sysroot}"
+            )
+    cargo_args = ["cargo"]
+    if toolchain:
+        cargo_args.append("+" + toolchain)
+    cargo_args += ["build", "--release", "--locked", "--package", "helix-term"]
     if args.target:
         cargo_args += ["--target", target]
-    run(cargo_args, cwd=source_dir)
+    build_env = {}
+    if target.endswith("-linux-gnu"):
+        build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
+    run(cargo_args, cwd=source_dir, env=build_env)
     binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
     binary_dir = source_dir / "target" / target / "release" if args.target else source_dir / "target" / "release"
     binary = binary_dir / binary_name
