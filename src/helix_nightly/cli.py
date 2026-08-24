@@ -63,6 +63,22 @@ def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
     run(prefix + [str(binary), "--grammar", "build"], cwd=source_dir)
 
 
+def _skip_symlinks(_directory: str, names: list[str]) -> set[str]:
+    """Ignore function for ``shutil.copytree`` that skips all symlinks.
+
+    Helix's grammar tree contains dangling directory symlinks (e.g.
+    ``move/queries``) and recursive self-referencing symlinks (e.g.
+    ``rpmspec/queries/rpmspec/rpmspec/…``).  ``copytree`` follows these
+    when ``symlinks=False`` and raises ``Errno 40`` (too many levels) or
+    ``Errno 2`` (file not found).  Skipping symlinks entirely avoids both
+    errors.  This is safe because the symlinked query directories only
+    contain Tree-sitter query files that are regenerated or not needed at
+    runtime for the affected languages.
+    """
+    directory = Path(_directory)
+    return {name for name in names if (directory / name).is_symlink()}
+
+
 def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     staging = Path(tempfile.mkdtemp(prefix="helix-package-"))
     root = staging / f"helix-{version}-{target}"
@@ -71,7 +87,8 @@ def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     runtime = source_dir / "runtime"
     if not runtime.is_dir():
         raise FileNotFoundError(f"Helix runtime directory not found: {runtime}")
-    shutil.copytree(runtime, root / "runtime")
+    # Skip problematic symlinks so copytree succeeds on both Linux and Windows.
+    shutil.copytree(runtime, root / "runtime", symlinks=True, ignore=_skip_symlinks)
     return staging
 
 

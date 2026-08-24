@@ -19,7 +19,7 @@ on:
         default: true
         type: boolean
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 3 * * 1,4"
 
 permissions:
   contents: write
@@ -28,8 +28,53 @@ env:
   HELIX_REF: ${{ inputs.ref || 'master' }}
 
 jobs:
+  check:
+    name: Check for upstream updates
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'schedule'
+    outputs:
+      upstream_sha: ${{ steps.resolve.outputs.sha }}
+      build_needed: ${{ steps.decide.outputs.build_needed }}
+    steps:
+      - name: Resolve upstream HEAD
+        id: resolve
+        shell: bash
+        run: |
+          sha=$(git ls-remote https://github.com/helix-editor/helix.git "${HELIX_REF}" | awk '{print $1}')
+          if [[ -z "$sha" ]]; then
+            echo "Failed to resolve upstream ref ${HELIX_REF}" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Upstream ${HELIX_REF} is $sha"
+
+      - name: Check if already built for this SHA
+        id: cache-check
+        uses: actions/cache@v4
+        with:
+          path: /tmp/helix-built-marker
+          key: helix-built-${{ steps.resolve.outputs.sha }}
+
+      - name: Determine whether build is needed
+        id: decide
+        shell: bash
+        run: |
+          if [[ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]]; then
+            echo "No new upstream commits since last build — skipping."
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: [check]
+    if: |
+      always() && (
+        github.event_name == 'workflow_dispatch' ||
+        needs.check.outputs.build_needed == 'true' ||
+        needs.check.result == 'skipped'
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +99,20 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ".helix-source -> target"
+          key: ${{ matrix.target }}
+          cache-on-failure: false
+
+      - name: Cache Helix grammars
+        uses: actions/cache@v4
+        with:
+          path: .helix-source/runtime/grammars
+          key: helix-grammars-${{ matrix.target }}-${{ hashFiles('.helix-source/runtime/grammars/sources/*/queries/**') }}
+          restore-keys: |
+            helix-grammars-${{ matrix.target }}-
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
@@ -138,6 +197,13 @@ jobs:
           name: helix-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+
+      - name: Mark upstream SHA as built
+        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/helix-built-marker
+          key: helix-built-${{ needs.check.outputs.upstream_sha }}
 
   release:
     name: Create GitHub Release
