@@ -1,4 +1,4 @@
-name: Build and release Helix
+name: Build and release Helix nightly
 
 on:
   workflow_dispatch:
