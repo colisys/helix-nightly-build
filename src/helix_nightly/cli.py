@@ -30,10 +30,15 @@ def run(
         command,
         cwd=cwd,
         env=process_env,
-        check=True,
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command, output=result.stdout)
     return result.stdout.strip()
 
 
@@ -190,7 +195,8 @@ def make_msi(staging: Path, output_dir: Path, target: str, version: str) -> Path
     candle = output_dir / "helix.wixobj"
     runtime_obj = output_dir / "runtime.wixobj"
     msi = output_dir / f"helix-{version}-{target}.msi"
-    binary_source = quoteattr(str((root / "hx.exe").resolve()))
+    binary_source = quoteattr("$(var.HelixBinary)")
+    binary_path = str((root / "hx.exe").resolve())
     source.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Name="Helix" Manufacturer="Helix" Version="1.0.0" Id="*" UpgradeCode="12345678-1234-1234-1234-123456789012">
@@ -214,7 +220,7 @@ def make_msi(staging: Path, output_dir: Path, target: str, version: str) -> Path
 </Wix>''', encoding="utf-8")
     try:
         run(["heat", "dir", str((root / "runtime").resolve()), "-cg", "Runtime", "-dr", "INSTALLFOLDER", "-gg", "-sfrag", "-out", str(fragment)])
-        run(["candle", "-out", str(candle), str(source)])
+        run(["candle", f"-dHelixBinary={binary_path}", "-out", str(candle), str(source)])
         run(["candle", "-out", str(runtime_obj), str(fragment)])
         run(["light", "-out", str(msi), str(candle), str(runtime_obj)])
     finally:
