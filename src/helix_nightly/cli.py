@@ -208,6 +208,7 @@ def build(args: argparse.Namespace) -> list[Path]:
         # toolchain selected from the source directory, not the builder root.
         active = run(["rustup", "show", "active-toolchain"], cwd=source_dir)
         toolchain = active.split()[0]
+        print(f"Using Rust toolchain {toolchain} for target {target}")
         run(["rustup", "target", "add", "--toolchain", toolchain, target], cwd=source_dir)
         sysroot = Path(run(["rustc", "+" + toolchain, "--print", "sysroot"], cwd=source_dir))
         target_lib = sysroot / "lib" / "rustlib" / target / "lib"
@@ -221,17 +222,38 @@ def build(args: argparse.Namespace) -> list[Path]:
     cargo_args += ["build", "--release", "--locked", "--package", "helix-term"]
     if args.target:
         cargo_args += ["--target", target]
-    build_env = {}
+    build_env: dict[str, str] = {}
     if target.endswith("-linux-gnu"):
         build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
+    if target == "aarch64-unknown-linux-gnu":
+        build_env.update(
+            {
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER": "aarch64-linux-gnu-gcc",
+                "CC_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-gcc",
+                "CXX_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-g++",
+                "AR_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-ar",
+            }
+        )
+    print(f"Building for target {target}; host toolchain is {toolchain or host_target()}")
     run(cargo_args, cwd=source_dir, env=build_env)
     binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
     binary_dir = source_dir / "target" / target / "release" if args.target else source_dir / "target" / "release"
     binary = binary_dir / binary_name
     if not binary.is_file():
         raise FileNotFoundError(f"Built Helix binary not found: {binary}")
+
+    print("=" * 72)
+    print("Helix compilation completed successfully")
+    print(f"Target architecture: {target}")
+    print(f"Built binary: {binary}")
     if args.grammar:
+        print("Starting grammar fetch/build")
+        print(f"Grammar command prefix: {args.qemu or '(none; native execution)'}")
+        print("=" * 72)
         run_grammar(source_dir, binary, args.qemu)
+    else:
+        print("Grammar fetch/build skipped")
+    print("=" * 72)
     staging = stage(source_dir, binary, version, target)
     try:
         output_dir.mkdir(parents=True, exist_ok=True)

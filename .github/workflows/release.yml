@@ -59,7 +59,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-binfmt
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user-binfmt
 
       - name: Install nfpm
         if: runner.os == 'Linux'
@@ -88,9 +93,20 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Configure ARM64 linker
+      - name: Configure ARM64 C/C++ toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc"
+          } >> "$GITHUB_ENV"
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          aarch64-linux-gnu-ar --version
 
       - name: Build and package
         shell: bash
@@ -103,6 +119,18 @@ jobs:
             --formats "${{ matrix.formats }}" \
             --grammar "${qemu_args[@]}" \
             --output-dir dist
+
+      - name: Verify Linux binary architecture
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          binary=".helix-source/target/${{ matrix.target }}/release/hx"
+          file "$binary"
+          if [[ "${{ matrix.target }}" == aarch64-* ]]; then
+            file "$binary" | grep -qi aarch64
+          else
+            file "$binary" | grep -Eqi 'x86-64|x86_64'
+          fi
 
       - name: Upload packages
         uses: actions/upload-artifact@v4

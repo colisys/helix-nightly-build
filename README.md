@@ -29,11 +29,11 @@ The commands run after compilation and before packaging, so generated grammar ar
 qemu-aarch64 -L /usr/aarch64-linux-gnu
 ```
 
-This is necessary because GitHub-hosted runners are x86_64 while the produced binary is aarch64. The ARM job uses Cargo's `aarch64-linux-gnu-gcc` linker and QEMU user-mode emulation. More architecture-specific post-build commands can be added to `run_grammar()` in `src/helix_nightly/cli.py`.
+This is necessary because GitHub-hosted runners are x86_64 while the produced binary is aarch64. The ARM job uses Cargo's `aarch64-linux-gnu-gcc` linker, `aarch64-linux-gnu-g++` for Helix's Tree-sitter C/C++ grammar build, and QEMU user-mode emulation. The Rust toolchain name may contain `x86_64-unknown-linux-gnu` because the compiler runs on the x86_64 GitHub runner; the actual output target is selected by `--target aarch64-unknown-linux-gnu` and is verified with `file`. More architecture-specific post-build commands can be added to `run_grammar()` in `src/helix_nightly/cli.py`.
 
 ## Local usage
 
-Requirements: Python 3.10+, Git, Rust/Cargo, and packaging tools as needed.
+Requirements: Python 3.10+, Git, Rust/Cargo, and packaging tools as needed. For the Linux aarch64 cross-build, install `gcc-aarch64-linux-gnu`, `g++-aarch64-linux-gnu`, `binutils-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, and `qemu-user-binfmt`.
 
 ```bash
 python -m pip install -e .
