@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(ls -R src/helix_nightly 2>&1; cat pyproject.toml 2>&1)",
+      "Shell(python3 << 'PY' import shutil, tempfile, os from pathlib import Path # Simulate broken symlink handling with tempfile.TemporaryDirectory() as tmp: src = Path(tmp) / \"src\" dst_base = Path(tmp) / \"dst\" src.mkdir() (src / \"real.txt\").write_text(\"hello\") # broken file symlink (src / \"broken.txt\").symlink_to(\"nonexistent.txt\") # broken dir symlink (src / \"broken_dir\").symlink_to(\"nonexistent_dir\") # loop symlink sub = src / \"loopdir\" sub.mkdir() (sub / \"file.txt\").write_text(\"inside\") (sub / \"self\").symlink_to(\".\") print(\"Created structure, testing copytree default\") for name, kwargs in [ (\"default\", {}), (\"symlinks=True\", {\"symlinks\": True}), (\"symlinks=True+ignore_dangling\", {\"symlinks\": True, \"ignore_dangling_symlinks\": True}), (\"symlinks=False+ignore_dangling True (should still fail?)\", {\"symlinks\": False, \"ignore_dangling_symlinks\": True}), ]: dst = dst_base / name.replace(\" \", \"_\") if dst.exists(): shutil.rmtree(dst) try: shutil.copytree(src, dst, **kwargs) print(f\"{name}: SUCCESS\") # list dst for p in dst.rglob(\"*\"): print(\" \", p.relative_to(dst), \"->\", os.readlink(p) if p.is_symlink() else (\"file\" if p.is_file() else \"dir\")) except Exception as e: print(f\"{name}: FAILED {e!r}\") import traceback # print first line PY)",
+      "Shell(python3 -m py_compile src/helix_nightly/cli.py)",
+      "Shell(git add src/helix_nightly/cli.py && git commit -F - <<'EOF' fix packaging: preserve runtime symlinks to handle dangling and recursive links shutil.copytree dereferences symlinks by default, which fails on dangling grammar query symlinks (move, qmljs) and the recursive rpmspec/queries/rpmspec self-symlink loop. Use symlinks=True to copy links as links. Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(git:*)",
+      "Shell(ls -la ~/.ssh/ 2>&1; echo \"---\"; ssh -T git@github.com 2>&1; echo \"---\"; gh auth status 2>&1; echo \"---\"; git config --list 2>&1 | head -n 30)",
+      "Shell(curl -s https://api.github.com/repos/helix-editor/helix/commits/master --header Accept: application/vnd.github+json 2 >& 1)",
+      "Shell(ls -la .github/workflows/ 2>&1; cat .github/workflows/release.yml)",
+      "Shell(env | grep -i -E \"GITHUB|GH_TOKEN|TOKEN\" 2>&1 | head -n 20; echo \"---\"; cat ~/.gitconfig 2>&1 | head -n 30; echo \"---\"; gh auth status 2>&1; echo \"---\"; git remote get-url origin 2>&1)",
+      "Shell(cat ~/.ssh/config 2>&1; echo \"---\"; cat ~/.ssh/id_ed25519.pub 2>&1; echo \"---\"; ls -la ~/.ssh/*.key 2>&1; echo \"---\"; ssh -v -T git@github.com 2>&1 | head -n 50)",
+      "Shell(curl -s -I https://github.com 2 >& 1)",
+      "Shell(env)",
+      "Shell(grep:*)",
+      "Shell(cat:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

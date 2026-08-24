@@ -75,6 +75,8 @@ jobs:
         needs.check.outputs.build_needed == 'true' ||
         needs.check.result == 'skipped'
       )
+    env:
+      UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +112,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .helix-source/runtime/grammars
-          key: helix-grammars-${{ matrix.target }}-${{ hashFiles('.helix-source/runtime/grammars/sources/*/queries/**') }}
+          key: helix-grammars-${{ matrix.target }}-${{ env.UPSTREAM_SHA }}
           restore-keys: |
             helix-grammars-${{ matrix.target }}-
 
