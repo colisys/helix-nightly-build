@@ -75,8 +75,6 @@ jobs:
         needs.check.outputs.build_needed == 'true' ||
         needs.check.result == 'skipped'
       )
-    env:
-      UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,20 +107,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ".helix-source -> target"
-          key: ${{ matrix.target }}
-          cache-on-failure: false
-
-      - name: Cache Helix grammars
+      - name: Cache Cargo downloads only
         uses: actions/cache@v4
         with:
-          path: .helix-source/runtime/grammars
-          key: helix-grammars-${{ matrix.target }}-${{ env.UPSTREAM_SHA }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('.helix-source/Cargo.lock') }}
           restore-keys: |
-            helix-grammars-${{ matrix.target }}-
+            cargo-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
