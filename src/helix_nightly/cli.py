@@ -59,8 +59,8 @@ def host_target() -> str:
 
 def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
     prefix = shlex.split(qemu) if qemu else []
-    run(prefix + [str(binary), "grammar", "fetch"], cwd=source_dir)
-    run(prefix + [str(binary), "grammar", "build"], cwd=source_dir)
+    run(prefix + [str(binary), "--grammar", "fetch"], cwd=source_dir)
+    run(prefix + [str(binary), "--grammar", "build"], cwd=source_dir)
 
 
 def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
@@ -290,7 +290,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--target", help="Rust target triple")
     result.add_argument("--output-dir", default="dist")
     result.add_argument("--source-dir")
-    result.add_argument("--grammar", action="store_true", help="run hx grammar fetch/build")
+    result.add_argument("--grammar", action="store_true", help="run hx --grammar fetch/build")
     result.add_argument("--qemu", help="QEMU executable to prefix grammar commands")
     result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe,msi")
     return result

@@ -19,11 +19,11 @@ Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup 
 Every workflow build runs:
 
 ```text
-hx grammar fetch
-hx grammar build
+hx --grammar fetch
+hx --grammar build
 ```
 
-The commands run after compilation and before packaging, so generated grammar artifacts are included in the package. The aarch64 Linux job prefixes both commands with:
+The commands `hx --grammar fetch` and `hx --grammar build` run after compilation and before packaging, so generated grammar artifacts are included in the package. The aarch64 Linux job prefixes both commands with:
 
 ```text
 qemu-aarch64 -L /usr/aarch64-linux-gnu
