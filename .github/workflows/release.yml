@@ -178,6 +178,10 @@ jobs:
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check ziglang
+          zig_bin="$(python -m site --user-base)/bin"
+          echo "$zig_bin" >> "$GITHUB_PATH"
+          export PATH="$zig_bin:$PATH"
+          command -v zig
           zig version
           cat > /tmp/install-zig-wrappers.sh <<'SH'
           set -euo pipefail
