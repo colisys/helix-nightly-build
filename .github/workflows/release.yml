@@ -166,11 +166,12 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
+            ~/.cache/pip
             .helix-source/target
             .helix-source/runtime/grammars
-          key: helix-build-v2-${{ runner.os }}-${{ matrix.target }}-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
+          key: helix-build-v3-${{ runner.os }}-${{ matrix.target }}-ziglang-0.16.0-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
           restore-keys: |
-            helix-build-v2-${{ runner.os }}-${{ matrix.target }}-
+            helix-build-v3-${{ runner.os }}-${{ matrix.target }}-ziglang-0.16.0-
 
       - name: Report build cache
         shell: bash
@@ -248,23 +249,32 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
         run: |
-          python -m pip install --disable-pip-version-check ziglang
-          zig_user_base="$(python -m site --user-base)"
-          zig_bin="$(find "$zig_user_base" -type f -name zig -perm -111 -print -quit 2>/dev/null || true)"
+          python -m pip install \
+            --disable-pip-version-check \
+            --cache-dir "$HOME/.cache/pip" \
+            "ziglang==0.16.0"
+          zig_package_root="$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)' 2>/dev/null || true)"
+          zig_bin=""
+          if [[ -n "$zig_package_root" && -x "$zig_package_root/zig" ]]; then
+            zig_bin="$zig_package_root/zig"
+          fi
           if [[ -z "$zig_bin" ]]; then
             zig_bin="$(command -v zig || true)"
           fi
           if [[ -z "$zig_bin" || ! -x "$zig_bin" ]]; then
             echo "zig executable was not found after installing ziglang" >&2
             python -m pip show -f ziglang >&2 || true
-            find "$zig_user_base" -maxdepth 4 -type f -print >&2 || true
+            if [[ -n "$zig_package_root" && -d "$zig_package_root" ]]; then
+              find "$zig_package_root" -maxdepth 3 -type f -print >&2 || true
+            fi
             exit 1
           fi
+          echo "Using Zig package: ${zig_package_root:-unknown}"
+          echo "Using Zig executable: $zig_bin"
           echo "$(dirname "$zig_bin")" >> "$GITHUB_PATH"
           export PATH="$(dirname "$zig_bin"):$PATH"
-          echo "Using Zig: $zig_bin"
           "$zig_bin" version
-          zig_root="$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)')"
+          zig_root="$zig_package_root"
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             loader_name=ld-musl-aarch64.so.1
           else
