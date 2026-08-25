@@ -193,6 +193,57 @@ jobs:
             musl-tools \
             qemu-user-binfmt
 
+      - name: Install x86_64 musl compiler wrapper
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          cat > /tmp/x86_64-linux-musl-gcc <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "$@"; do
+            if [[ "$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("$arg")
+          done
+          exec /usr/bin/musl-gcc "${filtered[@]}"
+          SH
+          cat > /tmp/x86_64-linux-musl-g++ <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "$@"; do
+            if [[ "$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("$arg")
+          done
+          exec /usr/bin/musl-gcc "${filtered[@]}"
+          SH
+          chmod +x /tmp/x86_64-linux-musl-gcc /tmp/x86_64-linux-musl-g++
+          sudo install -m 0755 /tmp/x86_64-linux-musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+          sudo install -m 0755 /tmp/x86_64-linux-musl-g++ /usr/local/bin/x86_64-linux-musl-g++
+          /usr/local/bin/x86_64-linux-musl-gcc --version
+
       - name: Install Zig cross compiler
         if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
@@ -220,11 +271,45 @@ jobs:
           zig_bin="$3"
           cat > "/tmp/${prefix}-gcc" <<EOF
           #!/usr/bin/env bash
-          exec "$zig_bin" cc -target ${target} "\$@"
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "\$@"; do
+            if [[ "\$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "\$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("\$arg")
+          done
+          exec "$zig_bin" cc -target ${target} "\${filtered[@]}"
           EOF
           cat > "/tmp/${prefix}-g++" <<EOF
           #!/usr/bin/env bash
-          exec "$zig_bin" c++ -target ${target} "\$@"
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "\$@"; do
+            if [[ "\$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "\$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("\$arg")
+          done
+          exec "$zig_bin" c++ -target ${target} "\${filtered[@]}"
           EOF
           cat > "/tmp/${prefix}-ar" <<EOF
           #!/usr/bin/env bash
@@ -275,13 +360,13 @@ jobs:
         run: |
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
             {
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
-              echo "CC_x86_64_unknown_linux_musl=musl-gcc"
-              echo "CXX_x86_64_unknown_linux_musl=musl-gcc"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc"
+              echo "CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc"
+              echo "CXX_x86_64_unknown_linux_musl=x86_64-linux-musl-g++"
               echo "AR_x86_64_unknown_linux_musl=ar"
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=musl-gcc"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=x86_64-linux-musl-gcc"
             } >> "$GITHUB_ENV"
-            musl-gcc --version
+            x86_64-linux-musl-gcc --version
           elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
             {
               echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
