@@ -58,7 +58,7 @@ Options:
 
 ## GitHub Actions
 
-Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs weekly on Mondays and Thursdays at 03:17 UTC, creates an annotated Git tag such as `nightly-YYYYMMDD`, and publishes a prerelease using that tag. Manual runs can select the Helix ref and release tag, or set `publish` to false to only build artifacts. If a selected tag already exists, the workflow reuses it and updates the Release assets without force-moving the tag.
+Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs weekly on Mondays and Thursdays at 03:17 UTC, creates an annotated Git tag such as `nightly-YYYYMMDD`, and publishes a prerelease using that tag. Manual runs can select the Helix ref and release tag. Once all build matrix jobs succeed, the Release job runs automatically; if a selected tag already exists, the workflow reuses it and updates the Release assets without force-moving the tag.
 
 The scheduled run first checks whether Helix's upstream HEAD has changed since the last build. If the upstream commit SHA matches a cached marker (stored via GitHub Actions cache), the build is skipped entirely — saving CI minutes when there are no new commits. To force a fresh build from a scheduled run, trigger a `workflow_dispatch` run instead.
 
