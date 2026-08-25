@@ -198,33 +198,49 @@ jobs:
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check ziglang
-          zig_bin="$(python -m site --user-base)/bin"
-          echo "$zig_bin" >> "$GITHUB_PATH"
-          export PATH="$zig_bin:$PATH"
-          command -v zig
-          zig version
+          zig_user_base="$(python -m site --user-base)"
+          zig_bin="$(find "$zig_user_base" -type f -name zig -perm -111 -print -quit 2>/dev/null || true)"
+          if [[ -z "$zig_bin" ]]; then
+            zig_bin="$(command -v zig || true)"
+          fi
+          if [[ -z "$zig_bin" || ! -x "$zig_bin" ]]; then
+            echo "zig executable was not found after installing ziglang" >&2
+            python -m pip show -f ziglang >&2 || true
+            find "$zig_user_base" -maxdepth 4 -type f -print >&2 || true
+            exit 1
+          fi
+          echo "$(dirname "$zig_bin")" >> "$GITHUB_PATH"
+          export PATH="$(dirname "$zig_bin"):$PATH"
+          echo "Using Zig: $zig_bin"
+          "$zig_bin" version
           cat > /tmp/install-zig-wrappers.sh <<'SH'
           set -euo pipefail
           target="$1"
           prefix="$2"
-          cat > "/usr/local/bin/${prefix}-gcc" <<EOF
+          zig_bin="$3"
+          cat > "/tmp/${prefix}-gcc" <<EOF
           #!/usr/bin/env bash
-          exec zig cc -target ${target} "\$@"
+          exec "$zig_bin" cc -target ${target} "\$@"
           EOF
-          cat > "/usr/local/bin/${prefix}-g++" <<EOF
+          cat > "/tmp/${prefix}-g++" <<EOF
           #!/usr/bin/env bash
-          exec zig c++ -target ${target} "\$@"
+          exec "$zig_bin" c++ -target ${target} "\$@"
           EOF
-          cat > "/usr/local/bin/${prefix}-ar" <<EOF
+          cat > "/tmp/${prefix}-ar" <<EOF
           #!/usr/bin/env bash
-          exec zig ar "\$@"
+          exec "$zig_bin" ar "\$@"
           EOF
-          chmod +x "/usr/local/bin/${prefix}-gcc" "/usr/local/bin/${prefix}-g++" "/usr/local/bin/${prefix}-ar"
+          chmod +x "/tmp/${prefix}-gcc" "/tmp/${prefix}-g++" "/tmp/${prefix}-ar"
+          sudo install -m 0755 "/tmp/${prefix}-gcc" "/usr/local/bin/${prefix}-gcc"
+          sudo install -m 0755 "/tmp/${prefix}-g++" "/usr/local/bin/${prefix}-g++"
+          sudo install -m 0755 "/tmp/${prefix}-ar" "/usr/local/bin/${prefix}-ar"
           SH
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            sudo bash /tmp/install-zig-wrappers.sh aarch64-linux-musl aarch64-linux-musl
+            bash /tmp/install-zig-wrappers.sh aarch64-linux-musl aarch64-linux-musl "$zig_bin"
+            /usr/local/bin/aarch64-linux-musl-gcc --version
           else
-            sudo bash /tmp/install-zig-wrappers.sh riscv64-linux-musl riscv64-linux-musl
+            bash /tmp/install-zig-wrappers.sh riscv64-linux-musl riscv64-linux-musl "$zig_bin"
+            /usr/local/bin/riscv64-linux-musl-gcc --version
           fi
 
       - name: Install nfpm
