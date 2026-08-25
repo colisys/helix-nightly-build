@@ -104,8 +104,8 @@ jobs:
               {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
               {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-aarch64 -L /usr/aarch64-linux-gnu"},
               {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
-              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": False, "qemu": ""},
-              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": False, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-aarch64"},
+              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64"},
               {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64 -L /usr/riscv64-linux-gnu"},
               {"os": "windows-2022", "target": "x86_64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
               {"os": "windows-2022", "target": "aarch64-pc-windows-msvc", "formats": "archive,exe", "grammar": False, "qemu": ""},
@@ -264,6 +264,27 @@ jobs:
           export PATH="$(dirname "$zig_bin"):$PATH"
           echo "Using Zig: $zig_bin"
           "$zig_bin" version
+          zig_root="$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)')"
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            loader_name=ld-musl-aarch64.so.1
+          else
+            loader_name=ld-musl-riscv64.so.1
+          fi
+          loader="$(find "$zig_root" -type f -name "$loader_name" -print -quit 2>/dev/null || true)"
+          if [[ -z "$loader" ]]; then
+            echo "GRAMMAR_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "warning: $loader_name is not present in Zig; skipping target grammar execution"
+          else
+            loader_dir="$(dirname "$loader")"
+            if [[ "$(basename "$loader_dir")" == "lib" ]]; then
+              qemu_ld_prefix="$(dirname "$loader_dir")"
+            else
+              qemu_ld_prefix="$loader_dir"
+            fi
+            echo "GRAMMAR_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "QEMU_LD_PREFIX=$qemu_ld_prefix" >> "$GITHUB_ENV"
+            echo "QEMU_LD_PREFIX=$qemu_ld_prefix"
+          fi
           cat > /tmp/install-zig-wrappers.sh <<'SH'
           set -euo pipefail
           target="$1"
@@ -415,7 +436,11 @@ jobs:
           qemu_args=()
           grammar_args=()
           if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
-          if [[ "${{ matrix.grammar }}" == "true" ]]; then grammar_args=(--grammar "${qemu_args[@]}"); fi
+          if [[ "${{ matrix.grammar }}" == "true" && "${GRAMMAR_AVAILABLE:-true}" != "false" ]]; then
+            grammar_args=(--grammar "${qemu_args[@]}")
+          elif [[ "${{ matrix.grammar }}" == "true" ]]; then
+            echo "warning: target grammar runtime is unavailable; continuing without grammar build"
+          fi
           PYTHONPATH=src python -m helix_nightly \
             --ref "${HELIX_REF}" \
             --target "${{ matrix.target }}" \
