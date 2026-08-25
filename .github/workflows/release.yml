@@ -282,8 +282,8 @@ jobs:
           fi
           loader="$(find "$zig_root" -type f -name "$loader_name" -print -quit 2>/dev/null || true)"
           if [[ -z "$loader" ]]; then
-            echo "GRAMMAR_AVAILABLE=false" >> "$GITHUB_ENV"
-            echo "warning: $loader_name is not present in Zig; skipping target grammar execution"
+            echo "GRAMMAR_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "warning: $loader_name is not present in Zig; attempting grammar execution without QEMU_LD_PREFIX"
           else
             loader_dir="$(dirname "$loader")"
             if [[ "$(basename "$loader_dir")" == "lib" ]]; then

@@ -63,10 +63,29 @@ def host_target() -> str:
     raise RuntimeError("Could not determine the Rust host target")
 
 
-def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
+def run_grammar(
+    source_dir: Path,
+    binary: Path,
+    qemu: str | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
     prefix = shlex.split(qemu) if qemu else []
-    grammar_env = {"HELIX_DEFAULT_RUNTIME": str(source_dir / "runtime")}
+    grammar_env = {
+        "HELIX_DEFAULT_RUNTIME": str(source_dir / "runtime"),
+    }
+    if env:
+        grammar_env.update(env)
     print(f"Grammar runtime: {source_dir / 'runtime'}")
+    for name in (
+        "CC",
+        "CXX",
+        "AR",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+        "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER",
+    ):
+        if name in grammar_env:
+            print(f"Grammar {name}: {grammar_env[name]}")
     for action in ("fetch", "build"):
         try:
             run(
@@ -332,7 +351,7 @@ def build(args: argparse.Namespace) -> list[Path]:
         print("Starting grammar fetch/build")
         print(f"Grammar command prefix: {args.qemu or '(none; native execution)'}")
         print("=" * 72)
-        run_grammar(source_dir, binary, args.qemu)
+        run_grammar(source_dir, binary, args.qemu, env=build_env)
         ensure_grammars(source_dir, target)
     else:
         print("Grammar fetch/build skipped")
