@@ -77,15 +77,43 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            formats: archive,deb,rpm
+            formats: archive,deb,rpm,apk
+            grammar: true
             qemu: ""
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
-            formats: archive,deb,rpm
+            formats: archive,deb,rpm,apk
+            grammar: true
             qemu: qemu-aarch64 -L /usr/aarch64-linux-gnu
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            formats: archive,deb,rpm,apk
+            grammar: true
+            qemu: ""
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            formats: archive,deb,rpm,apk
+            grammar: true
+            qemu: qemu-aarch64 -L /opt/musl-cross/aarch64-linux-musl-cross/aarch64-linux-musl
+          - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-musl
+            formats: archive,deb,rpm,apk
+            grammar: true
+            qemu: qemu-riscv64 -L /opt/musl-cross/riscv64-linux-musl-cross/riscv64-linux-musl
+          - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-gnu
+            formats: archive,deb,rpm,apk
+            grammar: true
+            qemu: qemu-riscv64 -L /usr/riscv64-linux-gnu
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             formats: archive,exe
+            grammar: true
+            qemu: ""
+          - os: windows-2022
+            target: aarch64-pc-windows-msvc
+            formats: archive,exe
+            grammar: false
             qemu: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -138,7 +166,28 @@ jobs:
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
+            gcc-riscv64-linux-gnu \
+            g++-riscv64-linux-gnu \
+            binutils-riscv64-linux-gnu \
+            libc6-dev-riscv64-cross \
+            musl-tools \
             qemu-user-binfmt
+
+      - name: Install musl cross toolchains
+        if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /opt/musl-cross
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            toolchain=aarch64-linux-musl
+          else
+            toolchain=riscv64-linux-musl
+          fi
+          curl --fail --location --retry 3 \
+            "https://musl.cc/${toolchain}-cross.tgz" \
+            | tar -xz -C /opt/musl-cross
+          echo "/opt/musl-cross/${toolchain}-cross/bin" >> "$GITHUB_PATH"
 
       - name: Install nfpm
         if: runner.os == 'Linux'
@@ -166,31 +215,73 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Configure ARM64 C/C++ toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Configure Linux cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'riscv64gc-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
         run: |
-          {
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
-            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
-            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
-            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc"
-          } >> "$GITHUB_ENV"
-          aarch64-linux-gnu-gcc --version
-          aarch64-linux-gnu-g++ --version
-          aarch64-linux-gnu-ar --version
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+              echo "CC_x86_64_unknown_linux_musl=musl-gcc"
+              echo "CXX_x86_64_unknown_linux_musl=musl-gcc"
+              echo "AR_x86_64_unknown_linux_musl=ar"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=musl-gcc"
+            } >> "$GITHUB_ENV"
+            musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
+              echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc"
+              echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++"
+              echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=aarch64-linux-musl-gcc"
+            } >> "$GITHUB_ENV"
+            aarch64-linux-musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "riscv64gc-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc"
+              echo "CC_riscv64gc_unknown_linux_musl=riscv64-linux-musl-gcc"
+              echo "CXX_riscv64gc_unknown_linux_musl=riscv64-linux-musl-g++"
+              echo "AR_riscv64gc_unknown_linux_musl=riscv64-linux-musl-ar"
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=riscv64-linux-musl-gcc"
+            } >> "$GITHUB_ENV"
+            riscv64-linux-musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+              echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+              echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc"
+            } >> "$GITHUB_ENV"
+            aarch64-linux-gnu-gcc --version
+            aarch64-linux-gnu-g++ --version
+            aarch64-linux-gnu-ar --version
+          else
+            {
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc"
+              echo "CC_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-gcc"
+              echo "CXX_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-g++"
+              echo "AR_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-ar"
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=riscv64-linux-gnu-gcc"
+            } >> "$GITHUB_ENV"
+            riscv64-linux-gnu-gcc --version
+            riscv64-linux-gnu-g++ --version
+            riscv64-linux-gnu-ar --version
+          fi
 
       - name: Build and package
         shell: bash
         run: |
           qemu_args=()
+          grammar_args=()
           if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
+          if [[ "${{ matrix.grammar }}" == "true" ]]; then grammar_args=(--grammar "${qemu_args[@]}"); fi
           PYTHONPATH=src python -m helix_nightly \
             --ref "${HELIX_REF}" \
             --target "${{ matrix.target }}" \
             --formats "${{ matrix.formats }}" \
-            --grammar "${qemu_args[@]}" \
+            "${grammar_args[@]}" \
             --output-dir dist
 
       - name: Verify Linux binary architecture
@@ -201,9 +292,21 @@ jobs:
           file "$binary"
           if [[ "${{ matrix.target }}" == aarch64-* ]]; then
             file "$binary" | grep -qi aarch64
+          elif [[ "${{ matrix.target }}" == riscv64* ]]; then
+            file "$binary" | grep -Eqi 'RISC-V|riscv'
           else
             file "$binary" | grep -Eqi 'x86-64|x86_64'
           fi
+
+      - name: Report compiled grammar libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          grammar_dir=.helix-source/runtime/grammars
+          count=$(find "$grammar_dir" -maxdepth 1 -type f -name '*.so' | wc -l)
+          bytes=$(find "$grammar_dir" -maxdepth 1 -type f -name '*.so' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "Compiled grammar libraries: $count files, $bytes bytes"
+          find "$grammar_dir" -maxdepth 1 -type f -name '*.so' -printf '%f %s bytes\n' | sort || true
 
       - name: Report package sizes
         shell: bash
@@ -263,6 +366,30 @@ jobs:
             echo "tag=nightly-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve upstream revision
+        id: upstream
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ env.HELIX_REF }}
+        run: |
+          sha=$(git ls-remote https://github.com/helix-editor/helix.git "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')
+          if [[ -z "$sha" ]]; then sha="$UPSTREAM_REF"; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Write release description
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ env.HELIX_REF }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          cat > release-notes.md <<EOF
+          This is an unofficial nightly build of [Helix](https://github.com/helix-editor/helix), published by [helix-nightly-build](https://github.com/${{ github.repository }}).
+
+          The binaries were built from upstream ref $UPSTREAM_REF at commit [$UPSTREAM_SHA](https://github.com/helix-editor/helix/commit/$UPSTREAM_SHA).
+
+          This release is generated by the builder project and is not an official Helix release. It contains the artifacts produced by the successful platform builds for this run, including GNU/Linux, musl Linux, RISC-V Linux, Windows x86_64, and Windows ARM64 where available.
+          EOF
+
       - name: Create Git tag
         shell: bash
         env:
@@ -284,6 +411,6 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Helix ${{ steps.tag.outputs.tag }}
           prerelease: true
-          generate_release_notes: true
+          body_path: release-notes.md
           files: dist/*
           fail_on_unmatched_files: true

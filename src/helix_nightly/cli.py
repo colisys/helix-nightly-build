@@ -65,9 +65,15 @@ def host_target() -> str:
 
 def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
     prefix = shlex.split(qemu) if qemu else []
+    grammar_env = {"HELIX_DEFAULT_RUNTIME": str(source_dir / "runtime")}
+    print(f"Grammar runtime: {source_dir / 'runtime'}")
     for action in ("fetch", "build"):
         try:
-            run(prefix + [str(binary), "--grammar", action], cwd=source_dir)
+            run(
+                prefix + [str(binary), "--grammar", action],
+                cwd=source_dir,
+                env=grammar_env,
+            )
         except (subprocess.CalledProcessError, OSError) as error:
             # This is a nightly build: publish the binary and any grammars
             # that succeeded even when a remote grammar host is unavailable.
@@ -111,7 +117,11 @@ def ensure_grammars(source_dir: Path, target: str) -> None:
             file=sys.stderr,
         )
         return
-    print(f"Found {len(libraries)} compiled grammar libraries in {grammar_dir}")
+    total_size = sum(path.stat().st_size for path in libraries)
+    print(
+        f"Found {len(libraries)} compiled grammar libraries in {grammar_dir} "
+        f"({total_size} bytes)"
+    )
 
 
 def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
@@ -151,10 +161,16 @@ def make_archive(staging: Path, output_dir: Path, target: str, version: str) -> 
 
 def make_nfpm(staging: Path, output_dir: Path, target: str, version: str, fmt: str) -> Path:
     if shutil.which("nfpm") is None:
-        raise RuntimeError("nfpm is required to create deb/rpm packages")
+        raise RuntimeError("nfpm is required to create deb/rpm/apk packages")
     root = next(staging.iterdir())
     binary = root / "hx"
-    arch = "arm64" if target.startswith(("aarch64", "arm64")) else "amd64"
+    arch = (
+        "arm64"
+        if target.startswith(("aarch64", "arm64"))
+        else "riscv64"
+        if target.startswith("riscv64")
+        else "amd64"
+    )
     path = output_dir / f"helix-{version}-{target}.{fmt}"
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as config:
         config.write(
@@ -194,6 +210,7 @@ def make_exe(staging: Path, output_dir: Path, target: str, version: str) -> Path
     root = next(staging.iterdir())
     script = output_dir / "helix.iss"
     installer = output_dir / f"helix-{version}-{target}-setup.exe"
+    install_architecture = "arm64" if target == "aarch64-pc-windows-msvc" else "x64compatible"
     script.write_text(f'''[Setup]
 AppName=Helix
 AppVersion=1.0.0
@@ -202,7 +219,8 @@ OutputBaseFilename=helix-{version}-{target}-setup
 OutputDir={output_dir}
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={install_architecture}
+ArchitecturesInstallIn64BitMode={install_architecture}
 
 [Files]
 Source: "{root / 'hx.exe'}"; DestDir: "{{app}}"; Flags: ignoreversion
@@ -260,7 +278,7 @@ def build(args: argparse.Namespace) -> list[Path]:
     if args.target:
         cargo_args += ["--target", target]
     build_env: dict[str, str] = {"HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1"}
-    if target.endswith("-linux-gnu"):
+    if "-linux-" in target:
         build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
     if target == "aarch64-unknown-linux-gnu":
         build_env.update(
@@ -269,6 +287,33 @@ def build(args: argparse.Namespace) -> list[Path]:
                 "CC_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-gcc",
                 "CXX_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-g++",
                 "AR_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-ar",
+            }
+        )
+    elif target == "aarch64-unknown-linux-musl":
+        build_env.update(
+            {
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER": "aarch64-linux-musl-gcc",
+                "CC_aarch64_unknown_linux_musl": "aarch64-linux-musl-gcc",
+                "CXX_aarch64_unknown_linux_musl": "aarch64-linux-musl-g++",
+                "AR_aarch64_unknown_linux_musl": "aarch64-linux-musl-ar",
+            }
+        )
+    elif target == "riscv64gc-unknown-linux-gnu":
+        build_env.update(
+            {
+                "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER": "riscv64-linux-gnu-gcc",
+                "CC_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-gcc",
+                "CXX_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-g++",
+                "AR_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-ar",
+            }
+        )
+    elif target == "riscv64gc-unknown-linux-musl":
+        build_env.update(
+            {
+                "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER": "riscv64-linux-musl-gcc",
+                "CC_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-gcc",
+                "CXX_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-g++",
+                "AR_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-ar",
             }
         )
     print(f"Building for target {target}; host toolchain is {toolchain or host_target()}")
@@ -299,8 +344,8 @@ def build(args: argparse.Namespace) -> list[Path]:
         formats = set(args.formats.split(","))
         if "archive" in formats:
             paths.append(make_archive(staging, output_dir, target, version))
-        if target.endswith("-linux-gnu"):
-            for fmt in ("deb", "rpm"):
+        if "-linux-" in target:
+            for fmt in ("deb", "rpm", "apk"):
                 if fmt in formats:
                     paths.append(make_nfpm(staging, output_dir, target, version, fmt))
         if target.endswith("-windows-msvc"):
@@ -329,7 +374,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source-dir")
     result.add_argument("--grammar", action="store_true", help="run hx --grammar fetch/build")
     result.add_argument("--qemu", help="QEMU executable to prefix grammar commands")
-    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe")
+    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,apk,exe")
     return result
 
 
