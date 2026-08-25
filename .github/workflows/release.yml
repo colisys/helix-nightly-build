@@ -93,13 +93,13 @@ jobs:
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-musl
             formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: qemu-aarch64 -L /opt/musl-cross/aarch64-linux-musl-cross/aarch64-linux-musl
+            grammar: false
+            qemu: ""
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: qemu-riscv64 -L /opt/musl-cross/riscv64-linux-musl-cross/riscv64-linux-musl
+            grammar: false
+            qemu: ""
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-gnu
             formats: archive,deb,rpm,apk
@@ -173,21 +173,35 @@ jobs:
             musl-tools \
             qemu-user-binfmt
 
-      - name: Install musl cross toolchains
+      - name: Install Zig cross compiler
         if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
         run: |
+          python -m pip install --disable-pip-version-check ziglang
+          zig version
+          cat > /tmp/install-zig-wrappers.sh <<'SH'
           set -euo pipefail
-          mkdir -p /opt/musl-cross
+          target="$1"
+          prefix="$2"
+          cat > "/usr/local/bin/${prefix}-gcc" <<EOF
+          #!/usr/bin/env bash
+          exec zig cc -target ${target} "\$@"
+          EOF
+          cat > "/usr/local/bin/${prefix}-g++" <<EOF
+          #!/usr/bin/env bash
+          exec zig c++ -target ${target} "\$@"
+          EOF
+          cat > "/usr/local/bin/${prefix}-ar" <<EOF
+          #!/usr/bin/env bash
+          exec zig ar "\$@"
+          EOF
+          chmod +x "/usr/local/bin/${prefix}-gcc" "/usr/local/bin/${prefix}-g++" "/usr/local/bin/${prefix}-ar"
+          SH
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            toolchain=aarch64-linux-musl
+            sudo bash /tmp/install-zig-wrappers.sh aarch64-linux-musl aarch64-linux-musl
           else
-            toolchain=riscv64-linux-musl
+            sudo bash /tmp/install-zig-wrappers.sh riscv64-linux-musl riscv64-linux-musl
           fi
-          curl --fail --location --retry 3 \
-            "https://musl.cc/${toolchain}-cross.tgz" \
-            | tar -xz -C /opt/musl-cross
-          echo "/opt/musl-cross/${toolchain}-cross/bin" >> "$GITHUB_PATH"
 
       - name: Install nfpm
         if: runner.os == 'Linux'
