@@ -13,6 +13,21 @@ on:
         required: false
         default: nightly
         type: string
+      platform:
+        description: Build one platform or all platforms
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - riscv64gc-unknown-linux-gnu
+          - riscv64gc-unknown-linux-musl
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
 
   schedule:
     - cron: "17 3 * * 1,4"
@@ -62,8 +77,8 @@ jobs:
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
-    name: Build ${{ matrix.target }}
+  select-platform:
+    name: Select build platforms
     needs: [check]
     if: |
       always() && (
@@ -71,50 +86,48 @@ jobs:
         needs.check.outputs.build_needed == 'true' ||
         needs.check.result == 'skipped'
       )
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select matrix
+        id: select
+        shell: bash
+        env:
+          PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-aarch64 -L /usr/aarch64-linux-gnu"},
+              {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": False, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": False, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64 -L /usr/riscv64-linux-gnu"},
+              {"os": "windows-2022", "target": "x86_64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
+              {"os": "windows-2022", "target": "aarch64-pc-windows-msvc", "formats": "archive,exe", "grammar": False, "qemu": ""},
+          ]
+          selected = platforms
+          platform = os.environ["PLATFORM"]
+          if platform != "all":
+              selected = [item for item in platforms if item["target"] == platform]
+          if not selected:
+              raise SystemExit(f"Unknown platform: {platform}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matrix={json.dumps(selected, separators=(',', ':'))}", file=output)
+          print(json.dumps(selected, indent=2))
+          PY
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [check, select-platform]
+    if: needs.select-platform.result == 'success'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: ""
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: qemu-aarch64 -L /usr/aarch64-linux-gnu
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-musl
-            formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: ""
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-musl
-            formats: archive,deb,rpm,apk
-            grammar: false
-            qemu: ""
-          - os: ubuntu-22.04
-            target: riscv64gc-unknown-linux-musl
-            formats: archive,deb,rpm,apk
-            grammar: false
-            qemu: ""
-          - os: ubuntu-22.04
-            target: riscv64gc-unknown-linux-gnu
-            formats: archive,deb,rpm,apk
-            grammar: true
-            qemu: qemu-riscv64 -L /usr/riscv64-linux-gnu
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            formats: archive,exe
-            grammar: true
-            qemu: ""
-          - os: windows-2022
-            target: aarch64-pc-windows-msvc
-            formats: archive,exe
-            grammar: false
-            qemu: ""
+      matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out builder
