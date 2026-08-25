@@ -117,14 +117,21 @@ jobs:
           if not selected:
               raise SystemExit(f"Unknown platform: {platform}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              print(f"matrix={json.dumps(selected, separators=(',', ':'))}", file=output)
+              print(f"matrix={json.dumps({'include': selected}, separators=(',', ':'))}", file=output)
           print(json.dumps(selected, indent=2))
           PY
 
   build:
     name: Build ${{ matrix.target }}
     needs: [check, select-platform]
-    if: needs.select-platform.result == 'success'
+    if: |
+      always() &&
+      needs.select-platform.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.check.outputs.build_needed == 'true' ||
+        needs.check.result == 'skipped'
+      )
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
