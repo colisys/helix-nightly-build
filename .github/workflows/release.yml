@@ -89,7 +89,7 @@ jobs:
             qemu: qemu-aarch64 -L /usr/aarch64-linux-gnu
           - os: windows-2022
             target: x86_64-pc-windows-msvc
-            formats: archive,exe,msi
+            formats: archive,exe
             qemu: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -143,12 +143,11 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           "$(go env GOPATH)/bin/nfpm" --version
 
-      - name: Install Windows packagers
+      - name: Install Inno Setup
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install wixtoolset innosetup --no-progress -y
-          echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
+          choco install innosetup --no-progress -y
           echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
       - name: Set up Python

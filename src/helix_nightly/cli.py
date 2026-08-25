@@ -12,7 +12,7 @@ import tempfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from xml.sax.saxutils import quoteattr
+
 
 DEFAULT_REPO = "https://github.com/helix-editor/helix.git"
 
@@ -186,50 +186,6 @@ Name: "{{group}}\\Helix"; Filename: "{{app}}\\hx.exe"
     return installer
 
 
-def make_msi(staging: Path, output_dir: Path, target: str, version: str) -> Path:
-    if any(shutil.which(tool) is None for tool in ("candle", "light", "heat")):
-        raise RuntimeError("WiX candle, heat, and light are required to create an MSI")
-    root = next(staging.iterdir())
-    source = output_dir / "helix.wxs"
-    fragment = output_dir / "runtime.wxs"
-    candle = output_dir / "helix.wixobj"
-    runtime_obj = output_dir / "runtime.wixobj"
-    msi = output_dir / f"helix-{version}-{target}.msi"
-    binary_source = quoteattr("$(var.HelixBinary)")
-    binary_path = str((root / "hx.exe").resolve())
-    source.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Name="Helix" Manufacturer="Helix" Version="1.0.0" Id="*" UpgradeCode="12345678-1234-1234-1234-123456789012">
-    <Package InstallerVersion="500" Compressed="yes" />
-    <MediaTemplate />
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
-        <Directory Id="INSTALLFOLDER" Name="Helix" />
-      </Directory>
-    </Directory>
-    <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="HelixBinary" Guid="*">
-        <File Source={binary_source} KeyPath="yes" />
-      </Component>
-    </DirectoryRef>
-    <Feature Id="MainFeature" Title="Helix" Level="1">
-      <ComponentRef Id="HelixBinary" />
-      <ComponentGroupRef Id="Runtime" />
-    </Feature>
-  </Product>
-</Wix>''', encoding="utf-8")
-    try:
-        run(["heat", "dir", str((root / "runtime").resolve()), "-cg", "Runtime", "-dr", "INSTALLFOLDER", "-gg", "-sfrag", "-out", str(fragment)])
-        run(["candle", f"-dHelixBinary={binary_path}", "-out", str(candle), str(source)])
-        run(["candle", "-out", str(runtime_obj), str(fragment)])
-        run(["light", "-out", str(msi), str(candle), str(runtime_obj)])
-    finally:
-        source.unlink(missing_ok=True)
-        fragment.unlink(missing_ok=True)
-        candle.unlink(missing_ok=True)
-        runtime_obj.unlink(missing_ok=True)
-    return msi
-
 
 def checksum(path: Path) -> None:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -308,8 +264,7 @@ def build(args: argparse.Namespace) -> list[Path]:
         if target.endswith("-windows-msvc"):
             if "exe" in formats:
                 paths.append(make_exe(staging, output_dir, target, version))
-            if "msi" in formats:
-                paths.append(make_msi(staging, output_dir, target, version))
+
         normalized: list[Path] = []
         for path in paths:
             if path.parent != output_dir:
@@ -332,7 +287,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source-dir")
     result.add_argument("--grammar", action="store_true", help="run hx --grammar fetch/build")
     result.add_argument("--qemu", help="QEMU executable to prefix grammar commands")
-    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe,msi")
+    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe")
     return result
 
 

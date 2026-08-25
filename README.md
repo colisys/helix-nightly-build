@@ -10,9 +10,9 @@ The workflow builds:
 
 - Linux `x86_64-unknown-linux-gnu`: `.deb`, `.rpm`, `.tar.gz`
 - Linux `aarch64-unknown-linux-gnu` (arm64): `.deb`, `.rpm`, `.tar.gz`
-- Windows `x86_64-pc-windows-msvc`: Inno Setup `.exe` installer, WiX `.msi` installer, `.zip`
+- Windows `x86_64-pc-windows-msvc`: Inno Setup `.exe` installer, `.zip`
 
-Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup installer, while the `.msi` is a WiX installer. Both include the native `hx.exe` and the `runtime` directory. Linux packages are produced with `nfpm`; the workflow follows the official installation method `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest` and invokes `nfpm pkg --packager deb|rpm`. See the [nfpm Quick Start](https://nfpm.goreleaser.com/docs/quick-start/).
+Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup installer containing the native `hx.exe` and the `runtime` directory. Linux packages are produced with `nfpm`; the workflow follows the official installation method `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest` and invokes `nfpm pkg --packager deb|rpm`. See the [nfpm Quick Start](https://nfpm.goreleaser.com/docs/quick-start/).
 
 ## Build-time grammar generation
 
@@ -50,8 +50,8 @@ Options:
 - `--repo`: upstream repository URL
 - `--ref`: branch, tag, or commit
 - `--target`: Rust target triple
-- `--formats`: comma-separated `archive`, `deb`, `rpm`, `exe`, `msi`
-- `--grammar`: run `hx grammar fetch` and `hx grammar build`
+- `--formats`: comma-separated `archive`, `deb`, `rpm`, `exe`
+- `--grammar`: run `hx --grammar fetch` and `hx --grammar build`
 - `--qemu`: command prefix for emulated post-build commands
 - `--output-dir`: output directory
 - `--source-dir`: reuse an existing checkout
