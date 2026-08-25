@@ -215,9 +215,12 @@ jobs:
               skip_next=0
               continue
             fi
+            if [[ "$arg" == "-lgcc_s" || "$arg" == "-Wl,-Bdynamic" ]]; then
+              continue
+            fi
             filtered+=("$arg")
           done
-          exec /usr/bin/musl-gcc "${filtered[@]}"
+          exec /usr/bin/musl-gcc -static "${filtered[@]}"
           SH
           cat > /tmp/x86_64-linux-musl-g++ <<'SH'
           #!/usr/bin/env bash
@@ -236,10 +239,14 @@ jobs:
               skip_next=0
               continue
             fi
+            if [[ "$arg" == "-lgcc_s" || "$arg" == "-Wl,-Bdynamic" ]]; then
+              continue
+            fi
             filtered+=("$arg")
           done
-          exec /usr/bin/musl-gcc "${filtered[@]}"
+          exec /usr/bin/musl-gcc -static "${filtered[@]}"
           SH
+          chmod +x /tmp/x86_64-linux-musl-g++
           chmod +x /tmp/x86_64-linux-musl-gcc /tmp/x86_64-linux-musl-g++
           sudo install -m 0755 /tmp/x86_64-linux-musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
           sudo install -m 0755 /tmp/x86_64-linux-musl-g++ /usr/local/bin/x86_64-linux-musl-g++
@@ -395,7 +402,7 @@ jobs:
               echo "CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc"
               echo "CXX_x86_64_unknown_linux_musl=x86_64-linux-musl-g++"
               echo "AR_x86_64_unknown_linux_musl=ar"
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=x86_64-linux-musl-gcc"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=x86_64-linux-musl-gcc -C target-feature=+crt-static"
             } >> "$GITHUB_ENV"
             x86_64-linux-musl-gcc --version
           elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
