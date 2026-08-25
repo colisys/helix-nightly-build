@@ -100,19 +100,33 @@ jobs:
           path: .helix-source
           fetch-depth: 1
 
+      - name: Resolve Helix source revision
+        id: source-revision
+        shell: bash
+        run: echo "sha=$(git -C .helix-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo downloads only
+      - name: Cache Cargo, target, and fetched grammars
+        id: build-cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
+            ~/.cargo/registry/src
             ~/.cargo/git/db
-          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('.helix-source/Cargo.lock') }}
+            ~/.cargo/git/checkouts
+            .helix-source/target
+            .helix-source/runtime/grammars
+          key: helix-build-v2-${{ runner.os }}-${{ matrix.target }}-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-${{ matrix.target }}-
+            helix-build-v2-${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Report build cache
+        shell: bash
+        run: echo "Build cache hit: ${{ steps.build-cache.outputs.cache-hit || 'false' }}"
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
@@ -190,6 +204,16 @@ jobs:
             file "$binary" | grep -Eqi 'x86-64|x86_64'
           fi
 
+      - name: Report package sizes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          for path in sorted(Path("dist").iterdir()):
+              print(f"{path.name}: {path.stat().st_size} bytes")
+          PY
+
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
@@ -214,7 +238,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
-    if: needs.build.result == 'success'
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-22.04
     steps:
       - name: Check out release repository

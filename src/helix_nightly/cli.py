@@ -69,6 +69,8 @@ def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
         try:
             run(prefix + [str(binary), "--grammar", action], cwd=source_dir)
         except (subprocess.CalledProcessError, OSError) as error:
+            # This is a nightly build: publish the binary and any grammars
+            # that succeeded even when a remote grammar host is unavailable.
             print(f"warning: grammar {action} failed; continuing: {error}", file=sys.stderr)
 
 
@@ -88,6 +90,30 @@ def _skip_symlinks(_directory: str, names: list[str]) -> set[str]:
     return {name for name in names if (directory / name).is_symlink()}
 
 
+def _ignore_runtime_build_sources(directory: str, names: list[str]) -> set[str]:
+    ignored = _skip_symlinks(directory, names)
+    # Grammar sources are only needed while fetching/building grammars. The
+    # compiled libraries in runtime/grammars are sufficient at runtime and
+    # avoid shipping hundreds of embedded Git checkouts in every package.
+    if Path(directory).name == "grammars":
+        ignored.add("sources")
+    return ignored
+
+
+def ensure_grammars(source_dir: Path, target: str) -> None:
+    grammar_dir = source_dir / "runtime" / "grammars"
+    suffix = ".dll" if target.endswith("-windows-msvc") else ".dylib" if "-apple-" in target else ".so"
+    libraries = [path for path in grammar_dir.glob(f"*{suffix}") if path.is_file()]
+    if not libraries:
+        print(
+            f"warning: no compiled grammar libraries found in {grammar_dir}; "
+            "publishing the nightly without grammars",
+            file=sys.stderr,
+        )
+        return
+    print(f"Found {len(libraries)} compiled grammar libraries in {grammar_dir}")
+
+
 def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     staging = Path(tempfile.mkdtemp(prefix="helix-package-"))
     root = staging / f"helix-{version}-{target}"
@@ -96,8 +122,14 @@ def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     runtime = source_dir / "runtime"
     if not runtime.is_dir():
         raise FileNotFoundError(f"Helix runtime directory not found: {runtime}")
-    # Skip problematic symlinks so copytree succeeds on both Linux and Windows.
-    shutil.copytree(runtime, root / "runtime", symlinks=True, ignore=_skip_symlinks)
+    # Skip problematic symlinks and fetched grammar source checkouts. The
+    # compiled grammar libraries remain in runtime/grammars.
+    shutil.copytree(
+        runtime,
+        root / "runtime",
+        symlinks=True,
+        ignore=_ignore_runtime_build_sources,
+    )
     return staging
 
 
@@ -256,6 +288,7 @@ def build(args: argparse.Namespace) -> list[Path]:
         print(f"Grammar command prefix: {args.qemu or '(none; native execution)'}")
         print("=" * 72)
         run_grammar(source_dir, binary, args.qemu)
+        ensure_grammars(source_dir, target)
     else:
         print("Grammar fetch/build skipped")
     print("=" * 72)

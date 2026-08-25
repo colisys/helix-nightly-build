@@ -23,7 +23,7 @@ hx --grammar fetch
 hx --grammar build
 ```
 
-The commands `hx --grammar fetch` and `hx --grammar build` run after compilation and before packaging, so generated grammar artifacts are included in the package. The aarch64 Linux job prefixes both commands with:
+The commands `hx --grammar fetch` and `hx --grammar build` run after compilation and before packaging, so successfully generated grammar artifacts are included in the package. The aarch64 Linux job prefixes both commands with:
 
 ```text
 qemu-aarch64 -L /usr/aarch64-linux-gnu
@@ -62,6 +62,6 @@ Push this project to GitHub, then use `Actions -> Build and release Helix -> Run
 
 The scheduled run first checks whether Helix's upstream HEAD has changed since the last build. If the upstream commit SHA matches a cached marker (stored via GitHub Actions cache), the build is skipped entirely — saving CI minutes when there are no new commits. To force a fresh build from a scheduled run, trigger a `workflow_dispatch` run instead.
 
-The workflow caches Cargo registry and git downloads, but deliberately does not cache Rust's `target` directory or generated grammar tree. This avoids accumulating multi-gigabyte incremental build artifacts in GitHub Actions storage. Helix's automatic grammar fetch/build is disabled during Cargo compilation because some upstream grammar hosts can be temporarily unreachable. The optional post-build grammar fetch/build logs a warning and continues when a grammar cannot be fetched, so a network outage does not consume a full failed run.
+The workflow caches the Cargo registry, git downloads, each target's `.helix-source/target` directory, and fetched/compiled grammars under `.helix-source/runtime/grammars`. The cache key is separated by runner OS, target triple, Cargo.lock, Rust toolchain, and `languages.toml`; the restore key allows dependency, build, and grammar reuse after upstream source changes. A `Report build cache` step prints whether the current run had an exact build-cache hit. Helix's automatic grammar fetch/build is disabled during Cargo compilation, then the explicit post-build grammar step runs `hx --grammar fetch` and `hx --grammar build`. Grammar failures are logged as warnings and do not discard the binary or successfully built grammars; a nightly can be published with a partial or empty grammar set when upstream grammar hosts are unavailable. The build reports how many compiled grammar libraries were found before creating packages. Grammar source checkouts are excluded from final packages; only the compiled grammar libraries and runtime files are shipped. A `Report package sizes` step prints the exact files uploaded from `dist/`.
 
 The ARM64 Linux build is cross-compiled and uses QEMU for target-architecture grammar generation. On current Ubuntu releases, `qemu-user-static` is a virtual package; install its concrete provider `qemu-user-binfmt` (or `qemu-user-binfmt-hwe` on HWE systems). QEMU user-mode emulation is not a full ARM virtual machine; if future Helix build steps require kernel features or services unavailable under user-mode QEMU, use an ARM64 self-hosted runner instead.
