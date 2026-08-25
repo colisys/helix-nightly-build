@@ -126,7 +126,8 @@ jobs:
 
       - name: Report build cache
         shell: bash
-        run: echo "Build cache hit: ${{ steps.build-cache.outputs.cache-hit || 'false' }}"
+        run: |
+          echo "Build cache hit: ${{ steps.build-cache.outputs.cache-hit || 'false' }}"
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
