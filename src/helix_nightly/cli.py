@@ -203,7 +203,16 @@ def build(args: argparse.Namespace) -> list[Path]:
         # Helix may provide rust-toolchain.toml. Install the target in the
         # toolchain selected from the source directory, not the builder root.
         active = run(["rustup", "show", "active-toolchain"], cwd=source_dir)
-        toolchain = active.split()[0]
+        toolchain = next(
+            (
+                line.split()[0]
+                for line in reversed(active.splitlines())
+                if line.strip() and not line.lstrip().startswith(("info:", "warning:"))
+            ),
+            None,
+        )
+        if not toolchain or ":" in toolchain:
+            raise RuntimeError(f"Could not parse active Rust toolchain from: {active!r}")
         print(f"Using Rust toolchain {toolchain} for target {target}")
         run(["rustup", "target", "add", "--toolchain", toolchain, target], cwd=source_dir)
         sysroot = Path(run(["rustc", "+" + toolchain, "--print", "sysroot"], cwd=source_dir))
