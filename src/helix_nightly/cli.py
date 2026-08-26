@@ -72,6 +72,12 @@ def run_grammar(
 ) -> None:
     prefix = shlex.split(qemu) if qemu else []
     grammar_env = {
+        # Helix puts the parent of CARGO_MANIFEST_DIR first in its runtime
+        # search list. This is normally supplied by Cargo, but grammar commands
+        # run a standalone binary, so set it explicitly to keep generated
+        # libraries inside the upstream checkout rather than ~/.config/helix.
+        "CARGO_MANIFEST_DIR": str(source_dir / "helix-term"),
+        "HELIX_RUNTIME": str(source_dir / "runtime"),
         "HELIX_DEFAULT_RUNTIME": str(source_dir / "runtime"),
     }
     if env:
@@ -84,9 +90,11 @@ def run_grammar(
         "CC",
         "CXX",
         "AR",
+        "CARGO_MANIFEST_DIR",
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
         "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER",
+        "HELIX_RUNTIME",
         "HELIX_GRAMMAR_TARGET",
     ):
         if name in grammar_env:
