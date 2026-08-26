@@ -367,24 +367,45 @@ jobs:
             Write-Error "Failed to load the ARM64 MSVC environment from $vcvarsall"
           }
           $vcvarsOutput | Out-File -FilePath $envFile -Encoding ascii
+          $pathLine = $vcvarsOutput | Where-Object { $_ -match '^Path=(.*)$' } | Select-Object -First 1
+          if (-not $pathLine) {
+            Write-Error "vcvarsall did not export a PATH variable"
+          }
+          $vsPath = $pathLine -replace '^Path=', ''
+          foreach ($directory in ($vsPath -split ';' | Where-Object { $_ })) {
+            $directory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          $msvcRoot = Join-Path $installationPath "VC\Tools\MSVC"
+          $msvcVersion = Get-ChildItem -Path $msvcRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $msvcVersion) {
+            Write-Error "MSVC tools were not found below $msvcRoot"
+          }
+          $arm64Bin = Join-Path $msvcVersion.FullName "bin\Hostx64\arm64"
+          $arm64Cl = Join-Path $arm64Bin "cl.exe"
+          $arm64Link = Join-Path $arm64Bin "link.exe"
+          $arm64Lib = Join-Path $arm64Bin "lib.exe"
+          foreach ($tool in @($arm64Cl, $arm64Link, $arm64Lib)) {
+            if (-not (Test-Path $tool)) {
+              Write-Error "ARM64 MSVC tool was not found: $tool"
+            }
+          }
+          "HELIX_WINDOWS_ARM64_CL=$arm64Cl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HELIX_WINDOWS_ARM64_LINK=$arm64Link" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HELIX_WINDOWS_ARM64_LIB=$arm64Lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           foreach ($line in Get-Content $envFile) {
             if ($line -match '^([^=]+)=(.*)$') {
               "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             }
           }
           @(
-            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=link.exe",
-            "CC_aarch64_pc_windows_msvc=cl.exe",
-            "CXX_aarch64_pc_windows_msvc=cl.exe",
-            "AR_aarch64_pc_windows_msvc=lib.exe",
-            "CC=cl.exe",
-            "CXX=cl.exe",
-            "AR=lib.exe",
-            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS=-C linker=link.exe"
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$arm64Link",
+            "CC_aarch64_pc_windows_msvc=$arm64Cl",
+            "CXX_aarch64_pc_windows_msvc=$arm64Cl",
+            "AR_aarch64_pc_windows_msvc=$arm64Lib"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Configured Visual Studio cross toolchain: amd64_arm64"
           Write-Host "Validating tools inside the vcvarsall environment"
-          & cmd.exe /d /c "call `"$vcvarsall`" amd64_arm64 >NUL && where cl.exe && where link.exe && cl.exe 2>&1"
+          & cmd.exe /d /c "call `"$vcvarsall`" amd64_arm64 >NUL && where cl.exe && where link.exe"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "ARM64 MSVC tools could not be found inside the vcvarsall environment"
           }
@@ -504,7 +525,26 @@ jobs:
           if (-not (Test-Path $binary)) {
             Write-Error "Built Windows binary was not found at $binary"
           }
-          $machine = (dumpbin.exe /headers $binary | Select-String -Pattern 'machine \(' | Select-Object -First 1).Line
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe was not found at $vswhere"
+          }
+          $installationPath = (& $vswhere -latest -products * -property installationPath).Trim()
+          if (-not $installationPath) {
+            Write-Error "Visual Studio installation was not found"
+          }
+          $dumpbin = Get-ChildItem `
+            -Path (Join-Path $installationPath "VC\Tools\MSVC") `
+            -Filter dumpbin.exe `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $dumpbin) {
+            Write-Error "dumpbin.exe was not found below $installationPath"
+          }
+          Write-Host "Using dumpbin: $($dumpbin.FullName)"
+          $machine = (& $dumpbin.FullName /headers $binary | Select-String -Pattern 'machine \(' | Select-Object -First 1).Line
           Write-Host $machine
           if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc" -and $machine -notmatch 'AA64|ARM64') {
             Write-Error "Expected an ARM64 Windows binary, got: $machine"
