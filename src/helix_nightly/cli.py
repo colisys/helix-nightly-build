@@ -176,11 +176,14 @@ def smoke_test(staging: Path, target: str, qemu: str | None) -> None:
     prefix = shlex.split(qemu) if qemu else []
     smoke_env = {
         "HELIX_RUNTIME": str(runtime),
+        "HELIX_DEFAULT_RUNTIME": str(runtime),
         "HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1",
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),
     }
     print(f"Running package smoke test with runtime {runtime}")
+    run(["file", str(binary)], cwd=root)
+    run(["readelf", "-l", str(binary)], cwd=root)
     for command in (("--version",), ("--health", "languages")):
         run(prefix + [str(binary), *command], cwd=root, env=smoke_env)
 
