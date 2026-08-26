@@ -657,7 +657,8 @@ jobs:
             echo "Could not generate a release tag: upstream SHA is empty" >&2
             exit 1
           fi
-          tag="$UPSTREAM_SHA"
+          # Keep the tag short while retaining a non-hex prefix required by GitHub.
+          tag="helix-${UPSTREAM_SHA:0:12}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Generated release tag: $tag"
 
