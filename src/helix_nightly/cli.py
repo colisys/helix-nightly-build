@@ -75,6 +75,9 @@ def run_grammar(
     }
     if env:
         grammar_env.update(env)
+    # Keep the build-time fallback out of grammar generation. Grammar commands
+    # must read and write the runtime tree in the upstream checkout.
+    grammar_env["HELIX_DEFAULT_RUNTIME"] = str(source_dir / "runtime")
     print(f"Grammar runtime: {source_dir / 'runtime'}")
     for name in (
         "CC",
@@ -160,6 +163,26 @@ def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
         ignore=_ignore_runtime_build_sources,
     )
     return staging
+
+
+def smoke_test(staging: Path, target: str, qemu: str | None) -> None:
+    root = next(staging.iterdir())
+    binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
+    binary = root / binary_name
+    runtime = root / "runtime"
+    if target.endswith("-windows-msvc"):
+        print("Skipping runtime smoke test for Windows package")
+        return
+    prefix = shlex.split(qemu) if qemu else []
+    smoke_env = {
+        "HELIX_RUNTIME": str(runtime),
+        "HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1",
+        "XDG_CONFIG_HOME": str(root / ".config"),
+        "XDG_CACHE_HOME": str(root / ".cache"),
+    }
+    print(f"Running package smoke test with runtime {runtime}")
+    for command in (("--version",), ("--health", "languages")):
+        run(prefix + [str(binary), *command], cwd=root, env=smoke_env)
 
 
 def make_archive(staging: Path, output_dir: Path, target: str, version: str) -> Path:
@@ -358,6 +381,7 @@ def build(args: argparse.Namespace) -> list[Path]:
     print("=" * 72)
     staging = stage(source_dir, binary, version, target)
     try:
+        smoke_test(staging, target, args.qemu)
         output_dir.mkdir(parents=True, exist_ok=True)
         paths: list[Path] = []
         formats = set(args.formats.split(","))

@@ -194,63 +194,13 @@ jobs:
             musl-tools \
             qemu-user-binfmt
 
-      - name: Install x86_64 musl compiler wrapper
+      - name: Install x86_64 musl compiler
         if: matrix.target == 'x86_64-unknown-linux-musl'
         shell: bash
         run: |
-          cat > /tmp/x86_64-linux-musl-gcc <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          filtered=()
-          skip_next=0
-          for arg in "$@"; do
-            if [[ "$arg" == "--target" ]]; then
-              skip_next=1
-              continue
-            fi
-            if [[ "$arg" == --target=* ]]; then
-              continue
-            fi
-            if ((skip_next)); then
-              skip_next=0
-              continue
-            fi
-            if [[ "$arg" == "-lgcc_s" || "$arg" == "-Wl,-Bdynamic" ]]; then
-              continue
-            fi
-            filtered+=("$arg")
-          done
-          exec /usr/bin/musl-gcc -static "${filtered[@]}"
-          SH
-          cat > /tmp/x86_64-linux-musl-g++ <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          filtered=()
-          skip_next=0
-          for arg in "$@"; do
-            if [[ "$arg" == "--target" ]]; then
-              skip_next=1
-              continue
-            fi
-            if [[ "$arg" == --target=* ]]; then
-              continue
-            fi
-            if ((skip_next)); then
-              skip_next=0
-              continue
-            fi
-            if [[ "$arg" == "-lgcc_s" || "$arg" == "-Wl,-Bdynamic" ]]; then
-              continue
-            fi
-            filtered+=("$arg")
-          done
-          exec /usr/bin/musl-gcc -static "${filtered[@]}"
-          SH
-          chmod +x /tmp/x86_64-linux-musl-g++
-          chmod +x /tmp/x86_64-linux-musl-gcc /tmp/x86_64-linux-musl-g++
-          sudo install -m 0755 /tmp/x86_64-linux-musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
-          sudo install -m 0755 /tmp/x86_64-linux-musl-g++ /usr/local/bin/x86_64-linux-musl-g++
-          /usr/local/bin/x86_64-linux-musl-gcc --version
+          sudo apt-get install -y musl-tools
+          musl-gcc --version
+          musl-gcc -dumpmachine
 
       - name: Install Zig cross compiler
         if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
@@ -398,16 +348,14 @@ jobs:
         run: |
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
             {
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc"
-              echo "CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc"
-              echo "CXX_x86_64_unknown_linux_musl=x86_64-linux-musl-g++"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+              echo "CC_x86_64_unknown_linux_musl=musl-gcc"
+              echo "CXX_x86_64_unknown_linux_musl=musl-gcc"
               echo "AR_x86_64_unknown_linux_musl=ar"
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=x86_64-linux-musl-gcc -C target-feature=+crt-static"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C target-feature=+crt-static"
             } >> "$GITHUB_ENV"
-            x86_64-linux-musl-gcc --version
+            musl-gcc --version
           elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            {
-              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
               echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc"
               echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++"
               echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar"
@@ -489,6 +437,29 @@ jobs:
           echo "Compiled grammar libraries: $count files, $bytes bytes"
           find "$grammar_dir" -maxdepth 1 -type f -name '*.so' -printf '%f %s bytes\n' | sort || true
 
+      - name: Verify packaged runtime
+        shell: bash
+        run: |
+          qemu_args=()
+          if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            PYTHONPATH=src python - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "src")
+          from helix_nightly.cli import smoke_test, stage
+
+          source_dir = Path(".helix-source").resolve()
+          target = "${{ matrix.target }}"
+          binary = source_dir / "target" / target / "release" / "hx"
+          staging = stage(source_dir, binary, "smoke", target)
+          try:
+              smoke_test(staging, target, "${{ matrix.qemu }}" or None)
+          finally:
+              import shutil
+              shutil.rmtree(staging, ignore_errors=True)
+          PY
+          fi
       - name: Report package sizes
         shell: bash
         run: |
