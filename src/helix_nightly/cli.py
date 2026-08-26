@@ -558,6 +558,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # GitHub Windows runners commonly expose cp1252 streams, while Cargo may
+    # emit Unicode progress characters. Never let log encoding abort a build.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
     try:
         build(parser().parse_args())
     except (subprocess.CalledProcessError, OSError, RuntimeError) as error:
