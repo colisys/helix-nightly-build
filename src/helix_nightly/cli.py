@@ -317,9 +317,9 @@ def _load_visual_studio_environment(
     vcvarsall: str,
     architecture: str,
 ) -> dict[str, str]:
-    command = f'call "{vcvarsall}" {architecture} >NUL && set'
+    vcvarsall = vcvarsall.replace('\\"', '"').strip().strip('"')
     result = subprocess.run(
-        ["cmd.exe", "/d", "/c", command],
+        ["cmd.exe", "/d", "/c", "call", vcvarsall, architecture, ">NUL", "&&", "set"],
         env=dict(base_env),
         check=False,
         text=True,
