@@ -69,7 +69,7 @@ act workflow_dispatch \\
   -j build \\
   -P ubuntu-22.04=catthehacker/ubuntu:act-22.04 \\
   --input ref=master \\
-  --input tag=local-test \\
+
   --input platform=x86_64-unknown-linux-gnu
 ```
 
@@ -77,9 +77,9 @@ act workflow_dispatch \\
 
 ## GitHub Actions
 
-Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs weekly on Mondays and Thursdays at 03:17 UTC, creates an annotated tag such as `nightly-YYYYMMDD` in this builder repository, and publishes an unofficial prerelease of the upstream Helix build. The Release body identifies the upstream Helix ref and commit; automatic notes from this builder repository are disabled. Manual runs can select the Helix ref, release tag, and platform. Set `platform` to `all` for the complete matrix or choose one target to run only that platform; scheduled runs always build the complete matrix. Once all build matrix jobs succeed, the Release job runs automatically; if a selected tag already exists, the workflow reuses it and updates the Release assets without force-moving the tag.
+Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs daily at 03:17 UTC, checks the upstream Helix commit, and publishes an unofficial prerelease using that full upstream SHA as the annotated tag in this builder repository. The tag is generated automatically from the upstream commit; no manual tag input is required. The Release body identifies the upstream Helix ref and commit; automatic notes from this builder repository are disabled. Manual runs only need to select the Helix ref and platform. Set `platform` to `all` for the complete matrix or choose one target to run only that platform; scheduled runs always build the complete matrix. Once all build matrix jobs succeed, the Release job runs automatically; if an identical upstream commit is rebuilt, the workflow reuses its SHA tag and updates the Release assets without force-moving the tag.
 
-The scheduled run first checks whether Helix's upstream HEAD has changed since the last build. If the upstream commit SHA matches a cached marker (stored via GitHub Actions cache), the build is skipped entirely — saving CI minutes when there are no new commits. To force a fresh build from a scheduled run, trigger a `workflow_dispatch` run instead.
+Every run first checks whether the selected upstream Helix ref resolves successfully and whether its SHA has already been built. On scheduled runs, a matching cached marker skips the build to save CI minutes. Manual `workflow_dispatch` runs always proceed with the selected platform, even when the SHA already has a cached marker. On scheduled runs, the upstream-built marker is saved by a separate job that depends on the entire build matrix, so a partial or failed matrix never marks the upstream SHA as successfully built. Manual single-platform runs do not write this full-matrix marker.
 
 The workflow caches the Cargo registry, git downloads, each target's `.helix-source/target` directory, and fetched/compiled grammars under `.helix-source/runtime/grammars`. The cache key is separated by runner OS, target triple, Cargo.lock, Rust toolchain, and `languages.toml`; the restore key allows dependency, build, and grammar reuse after upstream source changes. A `Report build cache` step prints whether the current run had an exact build-cache hit. Helix's automatic grammar fetch/build is disabled during Cargo compilation, then the explicit post-build grammar step runs `hx --grammar fetch` and `hx --grammar build`. Grammar failures are logged as warnings and do not discard the binary or successfully built grammars; a nightly can be published with a partial or empty grammar set when upstream grammar hosts are unavailable. The build reports how many compiled grammar libraries were found before creating packages. Grammar source checkouts are excluded from final packages; only the compiled grammar libraries and runtime files are shipped. A `Report package sizes` step prints the exact files uploaded from `dist/`.
 

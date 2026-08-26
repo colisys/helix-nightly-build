@@ -8,11 +8,7 @@ on:
         required: false
         default: master
         type: string
-      tag:
-        description: Release tag
-        required: false
-        default: nightly
-        type: string
+
       platform:
         description: Build one platform or all platforms
         required: false
@@ -42,7 +38,7 @@ jobs:
   check:
     name: Check for upstream updates
     runs-on: ubuntu-22.04
-    if: github.event_name == 'schedule'
+
     outputs:
       upstream_sha: ${{ steps.resolve.outputs.sha }}
       build_needed: ${{ steps.decide.outputs.build_needed }}
@@ -51,8 +47,12 @@ jobs:
         id: resolve
         shell: bash
         run: |
-          sha=$(git ls-remote https://github.com/helix-editor/helix.git "${HELIX_REF}" | awk '{print $1}')
-          if [[ -z "$sha" ]]; then
+          if [[ "$HELIX_REF" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            sha="$HELIX_REF"
+          else
+            sha=$(git ls-remote https://github.com/helix-editor/helix.git "${HELIX_REF}" | awk '{print $1}')
+          fi
+          if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
             echo "Failed to resolve upstream ref ${HELIX_REF}" >&2
             exit 1
           fi
@@ -70,7 +70,10 @@ jobs:
         id: decide
         shell: bash
         run: |
-          if [[ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual run requested — forcing a build."
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]]; then
             echo "No new upstream commits since last build — skipping."
             echo "build_needed=false" >> "$GITHUB_OUTPUT"
           else
@@ -591,15 +594,20 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  mark-upstream-built:
+    name: Mark upstream SHA as built
+    needs: [check, build]
+    if: always() && github.event_name == 'schedule' && needs.check.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
       - name: Create upstream build marker
-        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           mkdir -p /tmp/helix-built-marker
           echo "${{ needs.check.outputs.upstream_sha }}" > /tmp/helix-built-marker/sha
+          cat /tmp/helix-built-marker/sha
 
-      - name: Mark upstream SHA as built
-        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Save upstream build marker
         uses: actions/cache/save@v4
         with:
           path: /tmp/helix-built-marker
@@ -622,25 +630,36 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Select release tag
-        id: tag
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=nightly-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Resolve upstream revision
         id: upstream
         shell: bash
         env:
           UPSTREAM_REF: ${{ env.HELIX_REF }}
         run: |
-          sha=$(git ls-remote https://github.com/helix-editor/helix.git "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')
-          if [[ -z "$sha" ]]; then sha="$UPSTREAM_REF"; fi
+          if [[ "$UPSTREAM_REF" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            sha="$UPSTREAM_REF"
+          else
+            sha=$(git ls-remote https://github.com/helix-editor/helix.git "$UPSTREAM_REF" | awk 'NR == 1 { print $1 }')
+          fi
+          if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            echo "Failed to resolve an upstream commit SHA for ref: $UPSTREAM_REF" >&2
+            exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release tag
+        id: tag
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          if [[ -z "$UPSTREAM_SHA" ]]; then
+            echo "Could not generate a release tag: upstream SHA is empty" >&2
+            exit 1
+          fi
+          tag="$UPSTREAM_SHA"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Generated release tag: $tag"
 
       - name: Write release description
         shell: bash
