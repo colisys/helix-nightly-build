@@ -30,7 +30,7 @@ on:
           - aarch64-pc-windows-msvc
 
   schedule:
-    - cron: "17 3 * * 1,4"
+    - cron: "17 3 * * *"
 
 permissions:
   contents: write
@@ -108,7 +108,7 @@ jobs:
               {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64"},
               {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64 -L /usr/riscv64-linux-gnu"},
               {"os": "windows-2022", "target": "x86_64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
-              {"os": "windows-2022", "target": "aarch64-pc-windows-msvc", "formats": "archive,exe", "grammar": False, "qemu": ""},
+              {"os": "windows-2022", "target": "aarch64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
           ]
           selected = platforms
           platform = os.environ["PLATFORM"]
@@ -342,6 +342,46 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Configure Windows cross toolchain
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe was not found at $vswhere"
+          }
+          $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $installationPath) {
+            Write-Error "Visual Studio ARM64 C++ tools were not found"
+          }
+          $installationPath = $installationPath.Trim()
+          $vcvarsall = Join-Path $installationPath "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvarsall)) {
+            Write-Error "vcvarsall.bat was not found at $vcvarsall"
+          }
+          "HELIX_WINDOWS_VCVARSALL=$vcvarsall" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $envFile = Join-Path $env:RUNNER_TEMP "helix-vcvars.env"
+          cmd.exe /d /c "call `"$vcvarsall`" amd64_arm64 >NUL && set" | Out-File -FilePath $envFile -Encoding ascii
+          foreach ($line in Get-Content $envFile) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          @(
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=link.exe",
+            "CC_aarch64_pc_windows_msvc=cl.exe",
+            "CXX_aarch64_pc_windows_msvc=cl.exe",
+            "AR_aarch64_pc_windows_msvc=lib.exe",
+            "CC=cl.exe",
+            "CXX=cl.exe",
+            "AR=lib.exe",
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS=-C linker=link.exe"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Configured Visual Studio cross toolchain: amd64_arm64"
+          where.exe cl.exe
+          where.exe link.exe
+          cl.exe 2>&1 | Select-Object -First 3
+
       - name: Configure Linux cross toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'riscv64gc-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
@@ -401,11 +441,14 @@ jobs:
         run: |
           qemu_args=()
           grammar_args=()
-          if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
-          if [[ "${{ matrix.grammar }}" == "true" && "${GRAMMAR_AVAILABLE:-true}" != "false" ]]; then
-            grammar_args=(--grammar "${qemu_args[@]}")
-          elif [[ "${{ matrix.grammar }}" == "true" ]]; then
-            echo "warning: target grammar runtime is unavailable; continuing without grammar build"
+          if [[ "${{ matrix.grammar }}" == "true" ]]; then
+            grammar_args=(--grammar)
+            if [[ -n "${{ matrix.qemu }}" ]]; then
+              grammar_args+=(--qemu "${{ matrix.qemu }}")
+            fi
+            echo "Grammar generation enabled: ${grammar_args[*]}"
+          else
+            echo "Grammar generation disabled by matrix"
           fi
           PYTHONPATH=src python -m helix_nightly \
             --ref "${HELIX_REF}" \
@@ -429,22 +472,45 @@ jobs:
           fi
 
       - name: Report compiled grammar libraries
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         shell: bash
         run: |
           grammar_dir=.helix-source/runtime/grammars
-          count=$(find "$grammar_dir" -maxdepth 1 -type f -name '*.so' | wc -l)
-          bytes=$(find "$grammar_dir" -maxdepth 1 -type f -name '*.so' -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
-          echo "Compiled grammar libraries: $count files, $bytes bytes"
-          find "$grammar_dir" -maxdepth 1 -type f -name '*.so' -printf '%f %s bytes\n' | sort || true
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" || "${{ matrix.target }}" == "aarch64-pc-windows-msvc" ]]; then
+            pattern='*.dll'
+          else
+            pattern='*.so'
+          fi
+          count=$(find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" | wc -l)
+          bytes=$(find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "Compiled grammar libraries ($pattern): $count files, $bytes bytes"
+          find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" -printf '%f %s bytes\n' | sort || true
+          if [[ "${{ matrix.grammar }}" == "true" && "$count" == "0" ]]; then
+            echo "warning: grammar was enabled but no $pattern libraries were produced; continuing nightly packaging" >&2
+          fi
+
+      - name: Verify Windows binary architecture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = ".helix-source\target\${{ matrix.target }}\release\hx.exe"
+          if (-not (Test-Path $binary)) {
+            Write-Error "Built Windows binary was not found at $binary"
+          }
+          $machine = (dumpbin.exe /headers $binary | Select-String -Pattern 'machine \(' | Select-Object -First 1).Line
+          Write-Host $machine
+          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc" -and $machine -notmatch 'AA64|ARM64') {
+            Write-Error "Expected an ARM64 Windows binary, got: $machine"
+          }
+          if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc" -and $machine -notmatch 'x64|8664') {
+            Write-Error "Expected an x86_64 Windows binary, got: $machine"
+          }
 
       - name: Verify packaged runtime
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          qemu_args=()
-          if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            PYTHONPATH=src python - <<'PY'
+          PYTHONPATH=src python - <<'PY'
           from pathlib import Path
           import sys
           sys.path.insert(0, "src")
@@ -460,7 +526,7 @@ jobs:
               import shutil
               shutil.rmtree(staging, ignore_errors=True)
           PY
-          fi
+
       - name: Report package sizes
         shell: bash
         run: |

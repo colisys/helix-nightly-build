@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -86,6 +87,7 @@ def run_grammar(
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
         "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER",
+        "HELIX_GRAMMAR_TARGET",
     ):
         if name in grammar_env:
             print(f"Grammar {name}: {grammar_env[name]}")
@@ -287,6 +289,110 @@ def checksum(path: Path) -> None:
     path.with_name(f"{path.name}.sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
 
 
+def _clean_host_environment(build_env: Mapping[str, str]) -> dict[str, str]:
+    host_env = os.environ.copy()
+    host_env.update(build_env)
+    for name in list(host_env):
+        if (
+            name.startswith("CARGO_TARGET_")
+            or name.startswith("CC_")
+            or name.startswith("CXX_")
+            or name.startswith("AR_")
+        ):
+            host_env.pop(name)
+    for name in (
+        "CC",
+        "CXX",
+        "AR",
+        "CARGO_BUILD_TARGET",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTFLAGS",
+    ):
+        host_env.pop(name, None)
+    return host_env
+
+
+def _load_visual_studio_environment(
+    base_env: Mapping[str, str],
+    vcvarsall: str,
+    architecture: str,
+) -> dict[str, str]:
+    command = f'call "{vcvarsall}" {architecture} >NUL && set'
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", command],
+        env=dict(base_env),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"Visual Studio environment setup failed for {architecture}: {result.stdout}"
+        )
+    environment = dict(base_env)
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            name, value = line.split("=", 1)
+            if name:
+                environment[name] = value
+    return environment
+
+
+@contextmanager
+def _temporary_grammar_target(source_dir: Path):
+    """Allow an x64 Helix host binary to build target-architecture grammars.
+
+    Upstream embeds BUILD_TARGET in helix-loader and the CLI passes None for
+    ``--grammar build``. Only the temporary host build needs this override;
+    the upstream source is restored before the final target binary is built.
+    """
+    main_rs = source_dir / "helix-term" / "src" / "main.rs"
+    original = main_rs.read_text(encoding="utf-8")
+    marker = "helix_loader::grammar::build_grammars(None, args.strict)?;"
+    replacement = (
+        "let grammar_target = std::env::var(\"HELIX_GRAMMAR_TARGET\").ok();\n"
+        "        helix_loader::grammar::build_grammars(grammar_target, args.strict)?;"
+    )
+    if marker not in original:
+        raise RuntimeError(
+            "Cannot enable cross-target grammar generation: upstream grammar CLI changed"
+        )
+    main_rs.write_text(original.replace(marker, replacement, 1), encoding="utf-8")
+    try:
+        yield
+    finally:
+        main_rs.write_text(original, encoding="utf-8")
+
+
+def build_host_binary(
+    source_dir: Path,
+    cargo_args: list[str],
+    build_env: Mapping[str, str],
+) -> Path:
+    host_env = _clean_host_environment(build_env)
+    if sys.platform == "win32":
+        vcvarsall = host_env.get("HELIX_WINDOWS_VCVARSALL")
+        if vcvarsall:
+            host_env = _load_visual_studio_environment(host_env, vcvarsall, "amd64")
+            host_env = _clean_host_environment(host_env)
+    host_args = [
+        *cargo_args,
+        "build",
+        "--release",
+        "--locked",
+        "--package",
+        "helix-term",
+        "--target",
+        "x86_64-pc-windows-msvc",
+    ]
+    run(host_args, cwd=source_dir, env=host_env)
+    binary = source_dir / "target" / "x86_64-pc-windows-msvc" / "release" / "hx.exe"
+    if not binary.is_file():
+        raise FileNotFoundError(f"Host grammar binary not found: {binary}")
+    return binary
+
+
 def build(args: argparse.Namespace) -> list[Path]:
     output_dir = Path(args.output_dir).resolve()
     source_dir = Path(args.source_dir).resolve() if args.source_dir else Path(".helix-source").resolve()
@@ -319,6 +425,7 @@ def build(args: argparse.Namespace) -> list[Path]:
     cargo_args = ["cargo"]
     if toolchain:
         cargo_args.append("+" + toolchain)
+    grammar_host_binary: Path | None = None
     cargo_args += ["build", "--release", "--locked", "--package", "helix-term"]
     if args.target:
         cargo_args += ["--target", target]
@@ -361,6 +468,21 @@ def build(args: argparse.Namespace) -> list[Path]:
                 "AR_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-ar",
             }
         )
+    if target == "aarch64-pc-windows-msvc" and args.grammar:
+        build_env["HELIX_GRAMMAR_TARGET"] = target
+        print("Building x86_64 Windows host binary for ARM64 grammar generation")
+        try:
+            with _temporary_grammar_target(source_dir):
+                grammar_host_binary = build_host_binary(
+                    source_dir,
+                    ["cargo", *( ["+" + toolchain] if toolchain else [])],
+                    build_env,
+                )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            print(
+                f"warning: ARM64 grammar host build failed; continuing without grammars: {error}",
+                file=sys.stderr,
+            )
     print(f"Building for target {target}; host toolchain is {toolchain or host_target()}")
     run(cargo_args, cwd=source_dir, env=build_env)
     binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
@@ -377,7 +499,8 @@ def build(args: argparse.Namespace) -> list[Path]:
         print("Starting grammar fetch/build")
         print(f"Grammar command prefix: {args.qemu or '(none; native execution)'}")
         print("=" * 72)
-        run_grammar(source_dir, binary, args.qemu, env=build_env)
+        grammar_binary = grammar_host_binary or binary
+        run_grammar(source_dir, grammar_binary, args.qemu, env=build_env)
         ensure_grammars(source_dir, target)
     else:
         print("Grammar fetch/build skipped")
