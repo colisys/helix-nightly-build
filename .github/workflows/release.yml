@@ -356,6 +356,8 @@ jobs:
             } >> "$GITHUB_ENV"
             musl-gcc --version
           elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
               echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc"
               echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++"
               echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar"
