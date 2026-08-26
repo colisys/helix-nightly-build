@@ -317,6 +317,28 @@ def _clean_host_environment(build_env: Mapping[str, str]) -> dict[str, str]:
         "CARGO_BUILD_TARGET",
         "CARGO_BUILD_RUSTFLAGS",
         "RUSTFLAGS",
+        # Do not let the ARM64 vcvarsall environment leak into the x64 host
+        # build. In particular, an ARM64 LIB path makes x64 link.exe report
+        # hundreds of misleading unresolved Windows API symbols.
+        "INCLUDE",
+        "LIB",
+        "LIBPATH",
+        "WindowsLibPath",
+        "VCToolsInstallDir",
+        "VCINSTALLDIR",
+        "UniversalCRTSdkDir",
+        "UCRTVersion",
+        "WindowsSdkDir",
+        "WindowsSDKLibVersion",
+        "WindowsSDKVersion",
+        "VSCMD_ARG_app_plat",
+        "VSCMD_ARG_HOST_ARCH",
+        "VSCMD_ARG_TGT_ARCH",
+        "VSCMD_VER",
+        "VisualStudioVersion",
+        "VSINSTALLDIR",
+        "Platform",
+        "PreferredToolArchitecture",
     ):
         host_env.pop(name, None)
     return host_env
@@ -328,11 +350,14 @@ def _load_visual_studio_environment(
     architecture: str,
 ) -> dict[str, str]:
     vcvarsall = vcvarsall.replace('\\"', '"').strip().strip('"')
+    command = f'call "{vcvarsall}" {architecture} >NUL && set'
     result = subprocess.run(
-        ["cmd.exe", "/d", "/c", "call", vcvarsall, architecture, ">NUL", "&&", "set"],
+        ["cmd.exe", "/d", "/c", command],
         env=dict(base_env),
         check=False,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -346,6 +371,20 @@ def _load_visual_studio_environment(
             name, value = line.split("=", 1)
             if name:
                 environment[name] = value
+    for name in ("LIB", "INCLUDE", "VCToolsInstallDir", "WindowsSdkDir"):
+        if not environment.get(name):
+            raise RuntimeError(
+                f"vcvarsall {architecture} did not export {name}; refusing to build with a stale environment"
+            )
+    if architecture == "amd64" and any(
+        "\\arm64" in part.lower()
+        for name in ("LIB", "INCLUDE")
+        for part in environment[name].split(";")
+    ):
+        raise RuntimeError(
+            f"vcvarsall {architecture} returned an ARM64 SDK path: "
+            f"LIB={environment['LIB']} INCLUDE={environment['INCLUDE']}"
+        )
     return environment
 
 
@@ -384,8 +423,10 @@ def build_host_binary(
     if sys.platform == "win32":
         vcvarsall = host_env.get("HELIX_WINDOWS_VCVARSALL")
         if vcvarsall:
+            # The returned environment contains the x64 LIB/INCLUDE values;
+            # do not run _clean_host_environment again or they would be
+            # discarded and the runner's ARM64 values could be reintroduced.
             host_env = _load_visual_studio_environment(host_env, vcvarsall, "amd64")
-            host_env = _clean_host_environment(host_env)
     host_args = [
         *cargo_args,
         "build",
