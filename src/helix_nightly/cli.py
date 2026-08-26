@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -349,7 +350,9 @@ def _load_visual_studio_environment(
     vcvarsall: str,
     architecture: str,
 ) -> dict[str, str]:
-    vcvarsall = vcvarsall.replace('\\"', '"').strip().strip('"')
+    # GITHUB_ENV/PowerShell may leave one or more backslashes before the
+    # surrounding quotes. They are escaping artifacts, not part of the path.
+    vcvarsall = re.sub(r'\\+(?=")', '', vcvarsall).strip().strip('"')
     command = f'call "{vcvarsall}" {architecture} >NUL && set'
     result = subprocess.run(
         ["cmd.exe", "/d", "/c", command],
