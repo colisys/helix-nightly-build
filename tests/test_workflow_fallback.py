@@ -45,7 +45,9 @@ class FallbackWorkflowTests(unittest.TestCase):
         self.assertIn('if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]', arch)
         self.assertIn('language_args=(--language zh-CN --translations translations/ci-zh-CN.json)', build)
         self.assertIn("needs.translate.result == 'success'", self.text)
-        self.assertIn("needs.translate.outputs.upstream_sha || env.HELIX_REF", build)
+        self.assertIn("needs.translate.outputs.upstream_sha || needs.check.outputs.upstream_sha", build)
+        self.assertIn("needs.select-platform.result == 'success'", self.text)
+        self.assertIn("$targetDir\\i18n-zh-CN", step(self.text, "Verify Windows binary architecture"))
 
 
 if __name__ == "__main__":

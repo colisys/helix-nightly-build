@@ -6,3 +6,4 @@ dist/
 .helix-source/
 .commandcode/
 translations/ci-*.json
+.secrets

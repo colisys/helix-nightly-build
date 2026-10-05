@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -10,9 +11,10 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from xml.sax.saxutils import quoteattr
+
 
 from . import i18n
 
@@ -34,6 +36,8 @@ def run(
         env=process_env,
         check=False,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -67,12 +71,51 @@ def host_target() -> str:
     raise RuntimeError("Could not determine the Rust host target")
 
 
-def run_grammar(source_dir: Path, binary: Path, qemu: str | None) -> None:
+def run_grammar(
+    source_dir: Path,
+    binary: Path,
+    qemu: str | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
     prefix = shlex.split(qemu) if qemu else []
+    grammar_env = {
+        # Helix puts the parent of CARGO_MANIFEST_DIR first in its runtime
+        # search list. This is normally supplied by Cargo, but grammar commands
+        # run a standalone binary, so set it explicitly to keep generated
+        # libraries inside the upstream checkout rather than ~/.config/helix.
+        "CARGO_MANIFEST_DIR": str(source_dir / "helix-term"),
+        "HELIX_RUNTIME": str(source_dir / "runtime"),
+        "HELIX_DEFAULT_RUNTIME": str(source_dir / "runtime"),
+    }
+    if env:
+        grammar_env.update(env)
+    # Keep the build-time fallback out of grammar generation. Grammar commands
+    # must read and write the runtime tree in the upstream checkout.
+    grammar_env["HELIX_DEFAULT_RUNTIME"] = str(source_dir / "runtime")
+    print(f"Grammar runtime: {source_dir / 'runtime'}")
+    for name in (
+        "CC",
+        "CXX",
+        "AR",
+        "CARGO_MANIFEST_DIR",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+        "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER",
+        "HELIX_RUNTIME",
+        "HELIX_GRAMMAR_TARGET",
+    ):
+        if name in grammar_env:
+            print(f"Grammar {name}: {grammar_env[name]}")
     for action in ("fetch", "build"):
         try:
-            run(prefix + [str(binary), "--grammar", action], cwd=source_dir)
+            run(
+                prefix + [str(binary), "--grammar", action],
+                cwd=source_dir,
+                env=grammar_env,
+            )
         except (subprocess.CalledProcessError, OSError) as error:
+            # This is a nightly build: publish the binary and any grammars
+            # that succeeded even when a remote grammar host is unavailable.
             print(f"warning: grammar {action} failed; continuing: {error}", file=sys.stderr)
 
 
@@ -92,6 +135,34 @@ def _skip_symlinks(_directory: str, names: list[str]) -> set[str]:
     return {name for name in names if (directory / name).is_symlink()}
 
 
+def _ignore_runtime_build_sources(directory: str, names: list[str]) -> set[str]:
+    ignored = _skip_symlinks(directory, names)
+    # Grammar sources are only needed while fetching/building grammars. The
+    # compiled libraries in runtime/grammars are sufficient at runtime and
+    # avoid shipping hundreds of embedded Git checkouts in every package.
+    if Path(directory).name == "grammars":
+        ignored.add("sources")
+    return ignored
+
+
+def ensure_grammars(source_dir: Path, target: str) -> None:
+    grammar_dir = source_dir / "runtime" / "grammars"
+    suffix = ".dll" if target.endswith("-windows-msvc") else ".dylib" if "-apple-" in target else ".so"
+    libraries = [path for path in grammar_dir.glob(f"*{suffix}") if path.is_file()]
+    if not libraries:
+        print(
+            f"warning: no compiled grammar libraries found in {grammar_dir}; "
+            "publishing the nightly without grammars",
+            file=sys.stderr,
+        )
+        return
+    total_size = sum(path.stat().st_size for path in libraries)
+    print(
+        f"Found {len(libraries)} compiled grammar libraries in {grammar_dir} "
+        f"({total_size} bytes)"
+    )
+
+
 def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     staging = Path(tempfile.mkdtemp(prefix="helix-package-"))
     root = staging / f"helix-{version}-{target}"
@@ -100,9 +171,38 @@ def stage(source_dir: Path, binary: Path, version: str, target: str) -> Path:
     runtime = source_dir / "runtime"
     if not runtime.is_dir():
         raise FileNotFoundError(f"Helix runtime directory not found: {runtime}")
-    # Skip problematic symlinks so copytree succeeds on both Linux and Windows.
-    shutil.copytree(runtime, root / "runtime", symlinks=True, ignore=_skip_symlinks)
+    # Skip problematic symlinks and fetched grammar source checkouts. The
+    # compiled grammar libraries remain in runtime/grammars.
+    shutil.copytree(
+        runtime,
+        root / "runtime",
+        symlinks=True,
+        ignore=_ignore_runtime_build_sources,
+    )
     return staging
+
+
+def smoke_test(staging: Path, target: str, qemu: str | None) -> None:
+    root = next(staging.iterdir())
+    binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
+    binary = root / binary_name
+    runtime = root / "runtime"
+    if target.endswith("-windows-msvc"):
+        print("Skipping runtime smoke test for Windows package")
+        return
+    prefix = shlex.split(qemu) if qemu else []
+    smoke_env = {
+        "HELIX_RUNTIME": str(runtime),
+        "HELIX_DEFAULT_RUNTIME": str(runtime),
+        "HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1",
+        "XDG_CONFIG_HOME": str(root / ".config"),
+        "XDG_CACHE_HOME": str(root / ".cache"),
+    }
+    print(f"Running package smoke test with runtime {runtime}")
+    run(["file", str(binary)], cwd=root)
+    run(["readelf", "-l", str(binary)], cwd=root)
+    for command in (("--version",), ("--health", "languages")):
+        run(prefix + [str(binary), *command], cwd=root, env=smoke_env)
 
 
 def make_archive(staging: Path, output_dir: Path, target: str, version: str) -> Path:
@@ -123,10 +223,16 @@ def make_archive(staging: Path, output_dir: Path, target: str, version: str) -> 
 
 def make_nfpm(staging: Path, output_dir: Path, target: str, version: str, fmt: str) -> Path:
     if shutil.which("nfpm") is None:
-        raise RuntimeError("nfpm is required to create deb/rpm packages")
+        raise RuntimeError("nfpm is required to create deb/rpm/apk packages")
     root = next(staging.iterdir())
     binary = root / "hx"
-    arch = "arm64" if target.startswith(("aarch64", "arm64")) else "amd64"
+    arch = (
+        "arm64"
+        if target.startswith(("aarch64", "arm64"))
+        else "riscv64"
+        if target.startswith("riscv64")
+        else "amd64"
+    )
     path = output_dir / f"helix-{version}-{target}.{fmt}"
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as config:
         config.write(
@@ -166,6 +272,7 @@ def make_exe(staging: Path, output_dir: Path, target: str, version: str) -> Path
     root = next(staging.iterdir())
     script = output_dir / "helix.iss"
     installer = output_dir / f"helix-{version}-{target}-setup.exe"
+    install_architecture = "arm64" if target == "aarch64-pc-windows-msvc" else "x64compatible"
     script.write_text(f'''[Setup]
 AppName=Helix
 AppVersion=1.0.0
@@ -174,7 +281,8 @@ OutputBaseFilename=helix-{version}-{target}-setup
 OutputDir={output_dir}
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={install_architecture}
+ArchitecturesInstallIn64BitMode={install_architecture}
 
 [Files]
 Source: "{root / 'hx.exe'}"; DestDir: "{{app}}"; Flags: ignoreversion
@@ -190,54 +298,158 @@ Name: "{{group}}\\Helix"; Filename: "{{app}}\\hx.exe"
     return installer
 
 
-def make_msi(staging: Path, output_dir: Path, target: str, version: str) -> Path:
-    if any(shutil.which(tool) is None for tool in ("candle", "light", "heat")):
-        raise RuntimeError("WiX candle, heat, and light are required to create an MSI")
-    root = next(staging.iterdir())
-    source = output_dir / "helix.wxs"
-    fragment = output_dir / "runtime.wxs"
-    candle = output_dir / "helix.wixobj"
-    runtime_obj = output_dir / "runtime.wixobj"
-    msi = output_dir / f"helix-{version}-{target}.msi"
-    binary_source = quoteattr("$(var.HelixBinary)")
-    binary_path = str((root / "hx.exe").resolve())
-    source.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Name="Helix" Manufacturer="Helix" Version="1.0.0" Id="*" UpgradeCode="12345678-1234-1234-1234-123456789012">
-    <Package InstallerVersion="500" Compressed="yes" />
-    <MediaTemplate />
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
-        <Directory Id="INSTALLFOLDER" Name="Helix" />
-      </Directory>
-    </Directory>
-    <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="HelixBinary" Guid="*">
-        <File Source={binary_source} KeyPath="yes" />
-      </Component>
-    </DirectoryRef>
-    <Feature Id="MainFeature" Title="Helix" Level="1">
-      <ComponentRef Id="HelixBinary" />
-      <ComponentGroupRef Id="Runtime" />
-    </Feature>
-  </Product>
-</Wix>''', encoding="utf-8")
-    try:
-        run(["heat", "dir", str((root / "runtime").resolve()), "-cg", "Runtime", "-dr", "INSTALLFOLDER", "-gg", "-sfrag", "-out", str(fragment)])
-        run(["candle", f"-dHelixBinary={binary_path}", "-out", str(candle), str(source)])
-        run(["candle", "-out", str(runtime_obj), str(fragment)])
-        run(["light", "-out", str(msi), str(candle), str(runtime_obj)])
-    finally:
-        source.unlink(missing_ok=True)
-        fragment.unlink(missing_ok=True)
-        candle.unlink(missing_ok=True)
-        runtime_obj.unlink(missing_ok=True)
-    return msi
-
 
 def checksum(path: Path) -> None:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     path.with_name(f"{path.name}.sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+
+
+def _clean_host_environment(build_env: Mapping[str, str]) -> dict[str, str]:
+    host_env = os.environ.copy()
+    host_env.update(build_env)
+    for name in list(host_env):
+        if (
+            name.startswith("CARGO_TARGET_")
+            or name.startswith("CC_")
+            or name.startswith("CXX_")
+            or name.startswith("AR_")
+        ):
+            host_env.pop(name)
+    for name in (
+        "CC",
+        "CXX",
+        "AR",
+        "CARGO_BUILD_TARGET",
+        "CARGO_BUILD_RUSTFLAGS",
+        "RUSTFLAGS",
+        # Do not let the ARM64 vcvarsall environment leak into the x64 host
+        # build. In particular, an ARM64 LIB path makes x64 link.exe report
+        # hundreds of misleading unresolved Windows API symbols.
+        "INCLUDE",
+        "LIB",
+        "LIBPATH",
+        "WindowsLibPath",
+        "VCToolsInstallDir",
+        "VCINSTALLDIR",
+        "UniversalCRTSdkDir",
+        "UCRTVersion",
+        "WindowsSdkDir",
+        "WindowsSDKLibVersion",
+        "WindowsSDKVersion",
+        "VSCMD_ARG_app_plat",
+        "VSCMD_ARG_HOST_ARCH",
+        "VSCMD_ARG_TGT_ARCH",
+        "VSCMD_VER",
+        "VisualStudioVersion",
+        "VSINSTALLDIR",
+        "Platform",
+        "PreferredToolArchitecture",
+    ):
+        host_env.pop(name, None)
+    return host_env
+
+
+def _load_visual_studio_environment(
+    base_env: Mapping[str, str],
+    vcvarsall: str,
+    architecture: str,
+) -> dict[str, str]:
+    # GITHUB_ENV/PowerShell may leave one or more backslashes before the
+    # surrounding quotes. They are escaping artifacts, not part of the path.
+    vcvarsall = re.sub(r'\\+(?=")', '', vcvarsall).strip().strip('"')
+    command = f'call "{vcvarsall}" {architecture} >NUL && set'
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", command],
+        env=dict(base_env),
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"Visual Studio environment setup failed for {architecture}: {result.stdout}"
+        )
+    environment = dict(base_env)
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            name, value = line.split("=", 1)
+            if name:
+                environment[name] = value
+    for name in ("LIB", "INCLUDE", "VCToolsInstallDir", "WindowsSdkDir"):
+        if not environment.get(name):
+            raise RuntimeError(
+                f"vcvarsall {architecture} did not export {name}; refusing to build with a stale environment"
+            )
+    if architecture == "amd64" and any(
+        "\\arm64" in part.lower()
+        for name in ("LIB", "INCLUDE")
+        for part in environment[name].split(";")
+    ):
+        raise RuntimeError(
+            f"vcvarsall {architecture} returned an ARM64 SDK path: "
+            f"LIB={environment['LIB']} INCLUDE={environment['INCLUDE']}"
+        )
+    return environment
+
+
+@contextmanager
+def _temporary_grammar_target(source_dir: Path):
+    """Allow an x64 Helix host binary to build target-architecture grammars.
+
+    Upstream embeds BUILD_TARGET in helix-loader and the CLI passes None for
+    ``--grammar build``. Only the temporary host build needs this override;
+    the upstream source is restored before the final target binary is built.
+    """
+    main_rs = source_dir / "helix-term" / "src" / "main.rs"
+    original = main_rs.read_text(encoding="utf-8")
+    marker = "helix_loader::grammar::build_grammars(None, args.strict)?;"
+    replacement = (
+        "let grammar_target = std::env::var(\"HELIX_GRAMMAR_TARGET\").ok();\n"
+        "        helix_loader::grammar::build_grammars(grammar_target, args.strict)?;"
+    )
+    if marker not in original:
+        raise RuntimeError(
+            "Cannot enable cross-target grammar generation: upstream grammar CLI changed"
+        )
+    main_rs.write_text(original.replace(marker, replacement, 1), encoding="utf-8")
+    try:
+        yield
+    finally:
+        main_rs.write_text(original, encoding="utf-8")
+
+
+def build_host_binary(
+    source_dir: Path,
+    cargo_args: list[str],
+    build_env: Mapping[str, str],
+) -> Path:
+    host_env = _clean_host_environment(build_env)
+    if sys.platform == "win32":
+        vcvarsall = host_env.get("HELIX_WINDOWS_VCVARSALL")
+        if vcvarsall:
+            # The returned environment contains the x64 LIB/INCLUDE values;
+            # do not run _clean_host_environment again or they would be
+            # discarded and the runner's ARM64 values could be reintroduced.
+            host_env = _load_visual_studio_environment(host_env, vcvarsall, "amd64")
+    host_args = [
+        *cargo_args,
+        "build",
+        "--release",
+        "--locked",
+        "--package",
+        "helix-term",
+        "--target",
+        "x86_64-pc-windows-msvc",
+    ]
+    run(host_args, cwd=source_dir, env=host_env)
+    host_target_dir = Path(host_env.get("CARGO_TARGET_DIR", source_dir / "target"))
+    binary = host_target_dir / "x86_64-pc-windows-msvc" / "release" / "hx.exe"
+    if not binary.is_file():
+        raise FileNotFoundError(f"Host grammar binary not found: {binary}")
+    return binary
 
 
 def build(args: argparse.Namespace) -> list[Path]:
@@ -271,12 +483,16 @@ def _build_source(args: argparse.Namespace, source_dir: Path, output_dir: Path) 
         # Helix may provide rust-toolchain.toml. Install the target in the
         # toolchain selected from the source directory, not the builder root.
         active = run(["rustup", "show", "active-toolchain"], cwd=source_dir)
-        # rustup can print installation progress before the actual toolchain.
-        selected = [line.split()[0] for line in active.splitlines()
-                    if line and not line.startswith("info:")]
-        if len(selected) != 1:
-            raise RuntimeError(f"Could not determine active Rust toolchain: {active}")
-        toolchain = selected[0]
+        toolchain = next(
+            (
+                line.split()[0]
+                for line in reversed(active.splitlines())
+                if line.strip() and not line.lstrip().startswith(("info:", "warning:"))
+            ),
+            None,
+        )
+        if not toolchain or ":" in toolchain:
+            raise RuntimeError(f"Could not parse active Rust toolchain from: {active!r}")
         print(f"Using Rust toolchain {toolchain} for target {target}")
         run(["rustup", "target", "add", "--toolchain", toolchain, target], cwd=source_dir)
         sysroot = Path(run(["rustc", "+" + toolchain, "--print", "sysroot"], cwd=source_dir))
@@ -288,13 +504,14 @@ def _build_source(args: argparse.Namespace, source_dir: Path, output_dir: Path) 
     cargo_args = ["cargo"]
     if toolchain:
         cargo_args.append("+" + toolchain)
+    grammar_host_binary: Path | None = None
     cargo_args += ["build", "--release", "--locked", "--package", "helix-term"]
     if args.target:
         cargo_args += ["--target", target]
     build_env: dict[str, str] = {"HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1"}
     if args.language:
         build_env["CARGO_TARGET_DIR"] = str(source_dir / "target" / f"i18n-{args.language}")
-    if target.endswith("-linux-gnu"):
+    if "-linux-" in target:
         build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
     if target == "aarch64-unknown-linux-gnu":
         build_env.update(
@@ -305,6 +522,48 @@ def _build_source(args: argparse.Namespace, source_dir: Path, output_dir: Path) 
                 "AR_aarch64_unknown_linux_gnu": "aarch64-linux-gnu-ar",
             }
         )
+    elif target == "aarch64-unknown-linux-musl":
+        build_env.update(
+            {
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER": "aarch64-linux-musl-gcc",
+                "CC_aarch64_unknown_linux_musl": "aarch64-linux-musl-gcc",
+                "CXX_aarch64_unknown_linux_musl": "aarch64-linux-musl-g++",
+                "AR_aarch64_unknown_linux_musl": "aarch64-linux-musl-ar",
+            }
+        )
+    elif target == "riscv64gc-unknown-linux-gnu":
+        build_env.update(
+            {
+                "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER": "riscv64-linux-gnu-gcc",
+                "CC_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-gcc",
+                "CXX_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-g++",
+                "AR_riscv64gc_unknown_linux_gnu": "riscv64-linux-gnu-ar",
+            }
+        )
+    elif target == "riscv64gc-unknown-linux-musl":
+        build_env.update(
+            {
+                "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER": "riscv64-linux-musl-gcc",
+                "CC_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-gcc",
+                "CXX_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-g++",
+                "AR_riscv64gc_unknown_linux_musl": "riscv64-linux-musl-ar",
+            }
+        )
+    if target == "aarch64-pc-windows-msvc" and args.grammar:
+        build_env["HELIX_GRAMMAR_TARGET"] = target
+        print("Building x86_64 Windows host binary for ARM64 grammar generation")
+        try:
+            with _temporary_grammar_target(source_dir):
+                grammar_host_binary = build_host_binary(
+                    source_dir,
+                    ["cargo", *( ["+" + toolchain] if toolchain else [])],
+                    build_env,
+                )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            print(
+                f"warning: ARM64 grammar host build failed; continuing without grammars: {error}",
+                file=sys.stderr,
+            )
     print(f"Building for target {target}; host toolchain is {toolchain or host_target()}")
     run(cargo_args, cwd=source_dir, env=build_env)
     binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
@@ -322,26 +581,28 @@ def _build_source(args: argparse.Namespace, source_dir: Path, output_dir: Path) 
         print("Starting grammar fetch/build")
         print(f"Grammar command prefix: {args.qemu or '(none; native execution)'}")
         print("=" * 72)
-        run_grammar(source_dir, binary, args.qemu)
+        grammar_binary = grammar_host_binary or binary
+        run_grammar(source_dir, grammar_binary, args.qemu, env=build_env)
+        ensure_grammars(source_dir, target)
     else:
         print("Grammar fetch/build skipped")
     print("=" * 72)
     staging = stage(source_dir, binary, version, target)
     try:
+        smoke_test(staging, target, args.qemu)
         output_dir.mkdir(parents=True, exist_ok=True)
         paths: list[Path] = []
         formats = set(args.formats.split(","))
         if "archive" in formats:
             paths.append(make_archive(staging, output_dir, target, version))
-        if target.endswith("-linux-gnu"):
-            for fmt in ("deb", "rpm"):
+        if "-linux-" in target:
+            for fmt in ("deb", "rpm", "apk"):
                 if fmt in formats:
                     paths.append(make_nfpm(staging, output_dir, target, version, fmt))
         if target.endswith("-windows-msvc"):
             if "exe" in formats:
                 paths.append(make_exe(staging, output_dir, target, version))
-            if "msi" in formats:
-                paths.append(make_msi(staging, output_dir, target, version))
+
         normalized: list[Path] = []
         for path in paths:
             if path.parent != output_dir:
@@ -366,11 +627,17 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--translations", help="reviewed JSON table; defaults to translations/LANGUAGE.json")
     result.add_argument("--grammar", action="store_true", help="run hx --grammar fetch/build")
     result.add_argument("--qemu", help="QEMU executable to prefix grammar commands")
-    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe,msi")
+    result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,apk,exe")
     return result
 
 
 def main() -> None:
+    # GitHub Windows runners commonly expose cp1252 streams, while Cargo may
+    # emit Unicode progress characters. Never let log encoding abort a build.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
     try:
         build(parser().parse_args())
     except (subprocess.CalledProcessError, OSError, RuntimeError, ValueError) as error:

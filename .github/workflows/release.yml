@@ -16,18 +16,24 @@ on:
         options:
           - original
           - zh-CN
-      tag:
-        description: Release tag
+      platform:
+        description: Build one platform or all platforms
         required: false
-        default: nightly
-        type: string
-      publish:
-        description: Create/update the GitHub Release
-        required: false
-        default: true
-        type: boolean
+        default: all
+        type: choice
+        options:
+          - all
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+          - riscv64gc-unknown-linux-gnu
+          - riscv64gc-unknown-linux-musl
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+
   schedule:
-    - cron: "17 3 * * 1,4"
+    - cron: "17 3 * * *"
 
 permissions:
   contents: write
@@ -39,7 +45,7 @@ jobs:
   check:
     name: Check for upstream updates
     runs-on: ubuntu-22.04
-    if: github.event_name == 'schedule'
+
     outputs:
       upstream_sha: ${{ steps.resolve.outputs.sha }}
       build_needed: ${{ steps.decide.outputs.build_needed }}
@@ -48,8 +54,12 @@ jobs:
         id: resolve
         shell: bash
         run: |
-          sha=$(git ls-remote https://github.com/helix-editor/helix.git "${HELIX_REF}" | awk '{print $1}')
-          if [[ -z "$sha" ]]; then
+          if [[ "$HELIX_REF" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            sha="$HELIX_REF"
+          else
+            sha=$(git ls-remote https://github.com/helix-editor/helix.git "${HELIX_REF}" | awk '{print $1}')
+          fi
+          if [[ -z "$sha" || ! "$sha" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
             echo "Failed to resolve upstream ref ${HELIX_REF}" >&2
             exit 1
           fi
@@ -67,7 +77,10 @@ jobs:
         id: decide
         shell: bash
         run: |
-          if [[ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual run requested — forcing a build."
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ steps.cache-check.outputs.cache-hit }}" == "true" ]]; then
             echo "No new upstream commits since last build — skipping."
             echo "build_needed=false" >> "$GITHUB_OUTPUT"
           else
@@ -105,7 +118,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: helix-editor/helix
-          ref: ${{ env.HELIX_REF }}
+          ref: ${{ needs.check.outputs.upstream_sha }}
           path: .helix-source
           fetch-depth: 1
 
@@ -140,31 +153,62 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  select-platform:
+    name: Select build platforms
+    needs: [check]
+    if: |
+      always() && needs.check.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || needs.check.outputs.build_needed == 'true')
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select matrix
+        id: select
+        shell: bash
+        env:
+          PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-aarch64 -L /usr/aarch64-linux-gnu"},
+              {"os": "ubuntu-22.04", "target": "x86_64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": ""},
+              {"os": "ubuntu-22.04", "target": "aarch64-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-aarch64"},
+              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-musl", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64"},
+              {"os": "ubuntu-22.04", "target": "riscv64gc-unknown-linux-gnu", "formats": "archive,deb,rpm,apk", "grammar": True, "qemu": "qemu-riscv64 -L /usr/riscv64-linux-gnu"},
+              {"os": "windows-2022", "target": "x86_64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
+              {"os": "windows-2022", "target": "aarch64-pc-windows-msvc", "formats": "archive,exe", "grammar": True, "qemu": ""},
+          ]
+          selected = platforms
+          platform = os.environ["PLATFORM"]
+          if platform != "all":
+              selected = [item for item in platforms if item["target"] == platform]
+          if not selected:
+              raise SystemExit(f"Unknown platform: {platform}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matrix={json.dumps({'include': selected}, separators=(',', ':'))}", file=output)
+          print(json.dumps(selected, indent=2))
+          PY
+
   build:
     name: Build ${{ matrix.target }} (${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }})
-    needs: [check, translate]
+    needs: [check, select-platform, translate]
     if: |
-      always() && (
-        (github.event_name == 'workflow_dispatch' &&
-          (inputs.language != 'zh-CN' || needs.translate.result == 'success')) ||
-        (github.event_name == 'schedule' && needs.check.outputs.build_needed == 'true')
+      always() &&
+      needs.select-platform.result == 'success' &&
+      (inputs.language != 'zh-CN' || needs.translate.result == 'success') &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.check.outputs.build_needed == 'true' ||
+        needs.check.result == 'skipped'
       )
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            formats: archive,deb,rpm
-            qemu: ""
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            formats: archive,deb,rpm
-            qemu: qemu-aarch64 -L /usr/aarch64-linux-gnu
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-            formats: archive,exe,msi
-            qemu: ""
+      matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out builder
@@ -174,23 +218,39 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: helix-editor/helix
-          ref: ${{ needs.translate.outputs.upstream_sha || env.HELIX_REF }}
+          ref: ${{ needs.translate.outputs.upstream_sha || needs.check.outputs.upstream_sha }}
           path: .helix-source
           fetch-depth: 1
+
+      - name: Resolve Helix source revision
+        id: source-revision
+        shell: bash
+        run: echo "sha=$(git -C .helix-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo downloads only
+      - name: Cache Cargo, target, and fetched grammars
+        id: build-cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
+            ~/.cargo/registry/src
             ~/.cargo/git/db
-          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('.helix-source/Cargo.lock') }}
+            ~/.cargo/git/checkouts
+            ~/.cache/pip
+            .helix-source/target
+            .helix-source/runtime/grammars
+          key: helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }}-ziglang-0.16.0-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-${{ matrix.target }}-
+            helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }}-ziglang-0.16.0-
+
+      - name: Report build cache
+        shell: bash
+        run: |
+          echo "Build cache hit: ${{ steps.build-cache.outputs.cache-hit || 'false' }}"
 
       - name: Install Linux cross compiler and QEMU
         if: runner.os == 'Linux'
@@ -201,7 +261,134 @@ jobs:
             g++-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
+            gcc-riscv64-linux-gnu \
+            g++-riscv64-linux-gnu \
+            binutils-riscv64-linux-gnu \
+            libc6-dev-riscv64-cross \
+            musl-tools \
             qemu-user-binfmt
+
+      - name: Install x86_64 musl compiler
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          sudo apt-get install -y musl-tools
+          musl-gcc --version
+          musl-gcc -dumpmachine
+
+      - name: Install Zig cross compiler
+        if: matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
+        shell: bash
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            --cache-dir "$HOME/.cache/pip" \
+            "ziglang==0.16.0"
+          zig_package_root="$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)' 2>/dev/null || true)"
+          zig_bin=""
+          if [[ -n "$zig_package_root" && -x "$zig_package_root/zig" ]]; then
+            zig_bin="$zig_package_root/zig"
+          fi
+          if [[ -z "$zig_bin" ]]; then
+            zig_bin="$(command -v zig || true)"
+          fi
+          if [[ -z "$zig_bin" || ! -x "$zig_bin" ]]; then
+            echo "zig executable was not found after installing ziglang" >&2
+            python -m pip show -f ziglang >&2 || true
+            if [[ -n "$zig_package_root" && -d "$zig_package_root" ]]; then
+              find "$zig_package_root" -maxdepth 3 -type f -print >&2 || true
+            fi
+            exit 1
+          fi
+          echo "Using Zig package: ${zig_package_root:-unknown}"
+          echo "Using Zig executable: $zig_bin"
+          echo "$(dirname "$zig_bin")" >> "$GITHUB_PATH"
+          export PATH="$(dirname "$zig_bin"):$PATH"
+          "$zig_bin" version
+          zig_root="$zig_package_root"
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            loader_name=ld-musl-aarch64.so.1
+          else
+            loader_name=ld-musl-riscv64.so.1
+          fi
+          loader="$(find "$zig_root" -type f -name "$loader_name" -print -quit 2>/dev/null || true)"
+          if [[ -z "$loader" ]]; then
+            echo "GRAMMAR_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "warning: $loader_name is not present in Zig; attempting grammar execution without QEMU_LD_PREFIX"
+          else
+            loader_dir="$(dirname "$loader")"
+            if [[ "$(basename "$loader_dir")" == "lib" ]]; then
+              qemu_ld_prefix="$(dirname "$loader_dir")"
+            else
+              qemu_ld_prefix="$loader_dir"
+            fi
+            echo "GRAMMAR_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "QEMU_LD_PREFIX=$qemu_ld_prefix" >> "$GITHUB_ENV"
+            echo "QEMU_LD_PREFIX=$qemu_ld_prefix"
+          fi
+          cat > /tmp/install-zig-wrappers.sh <<'SH'
+          set -euo pipefail
+          target="$1"
+          prefix="$2"
+          zig_bin="$3"
+          cat > "/tmp/${prefix}-gcc" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "\$@"; do
+            if [[ "\$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "\$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("\$arg")
+          done
+          exec "$zig_bin" cc -target ${target} "\${filtered[@]}"
+          EOF
+          cat > "/tmp/${prefix}-g++" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          filtered=()
+          skip_next=0
+          for arg in "\$@"; do
+            if [[ "\$arg" == "--target" ]]; then
+              skip_next=1
+              continue
+            fi
+            if [[ "\$arg" == --target=* ]]; then
+              continue
+            fi
+            if ((skip_next)); then
+              skip_next=0
+              continue
+            fi
+            filtered+=("\$arg")
+          done
+          exec "$zig_bin" c++ -target ${target} "\${filtered[@]}"
+          EOF
+          cat > "/tmp/${prefix}-ar" <<EOF
+          #!/usr/bin/env bash
+          exec "$zig_bin" ar "\$@"
+          EOF
+          chmod +x "/tmp/${prefix}-gcc" "/tmp/${prefix}-g++" "/tmp/${prefix}-ar"
+          sudo install -m 0755 "/tmp/${prefix}-gcc" "/usr/local/bin/${prefix}-gcc"
+          sudo install -m 0755 "/tmp/${prefix}-g++" "/usr/local/bin/${prefix}-g++"
+          sudo install -m 0755 "/tmp/${prefix}-ar" "/usr/local/bin/${prefix}-ar"
+          SH
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            bash /tmp/install-zig-wrappers.sh aarch64-linux-musl aarch64-linux-musl "$zig_bin"
+            /usr/local/bin/aarch64-linux-musl-gcc --version
+          else
+            bash /tmp/install-zig-wrappers.sh riscv64-linux-musl riscv64-linux-musl "$zig_bin"
+            /usr/local/bin/riscv64-linux-musl-gcc --version
+          fi
 
       - name: Install nfpm
         if: runner.os == 'Linux'
@@ -217,12 +404,11 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           "$(go env GOPATH)/bin/nfpm" --version
 
-      - name: Install Windows packagers
+      - name: Install Inno Setup
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install wixtoolset innosetup --no-progress -y
-          echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
+          choco install innosetup --no-progress -y
           echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
       - name: Set up Python
@@ -249,35 +435,150 @@ jobs:
             exit 1
           }
 
-      - name: Configure ARM64 C/C++ toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Configure Windows cross toolchain
+        if: runner.os == 'Windows' && matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe was not found at $vswhere"
+          }
+          $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $installationPath) {
+            Write-Error "Visual Studio ARM64 C++ tools were not found"
+          }
+          $installationPath = $installationPath.Trim()
+          $vcvarsall = Join-Path $installationPath "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvarsall)) {
+            Write-Error "vcvarsall.bat was not found at $vcvarsall"
+          }
+          "HELIX_WINDOWS_VCVARSALL=$vcvarsall" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $envFile = Join-Path $env:RUNNER_TEMP "helix-vcvars.env"
+          $vcvarsCommand = "call `"$vcvarsall`" amd64_arm64 >NUL && set"
+          $vcvarsOutput = & cmd.exe /d /c $vcvarsCommand
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to load the ARM64 MSVC environment from $vcvarsall"
+          }
+          $vcvarsOutput | Out-File -FilePath $envFile -Encoding ascii
+          $pathLine = $vcvarsOutput | Where-Object { $_ -match '^Path=(.*)$' } | Select-Object -First 1
+          if (-not $pathLine) {
+            Write-Error "vcvarsall did not export a PATH variable"
+          }
+          $vsPath = $pathLine -replace '^Path=', ''
+          foreach ($directory in ($vsPath -split ';' | Where-Object { $_ })) {
+            $directory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          $msvcRoot = Join-Path $installationPath "VC\Tools\MSVC"
+          $msvcVersion = Get-ChildItem -Path $msvcRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $msvcVersion) {
+            Write-Error "MSVC tools were not found below $msvcRoot"
+          }
+          $arm64Bin = Join-Path $msvcVersion.FullName "bin\Hostx64\arm64"
+          $arm64Cl = Join-Path $arm64Bin "cl.exe"
+          $arm64Link = Join-Path $arm64Bin "link.exe"
+          $arm64Lib = Join-Path $arm64Bin "lib.exe"
+          foreach ($tool in @($arm64Cl, $arm64Link, $arm64Lib)) {
+            if (-not (Test-Path $tool)) {
+              Write-Error "ARM64 MSVC tool was not found: $tool"
+            }
+          }
+          "HELIX_WINDOWS_ARM64_CL=$arm64Cl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HELIX_WINDOWS_ARM64_LINK=$arm64Link" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HELIX_WINDOWS_ARM64_LIB=$arm64Lib" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          foreach ($line in Get-Content $envFile) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          @(
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$arm64Link",
+            "CC_aarch64_pc_windows_msvc=$arm64Cl",
+            "CXX_aarch64_pc_windows_msvc=$arm64Cl",
+            "AR_aarch64_pc_windows_msvc=$arm64Lib"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Configured Visual Studio cross toolchain: amd64_arm64"
+          Write-Host "Validating tools inside the vcvarsall environment"
+          & cmd.exe /d /c "call `"$vcvarsall`" amd64_arm64 >NUL && where cl.exe && where link.exe"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM64 MSVC tools could not be found inside the vcvarsall environment"
+          }
+
+      - name: Configure Linux cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'riscv64gc-unknown-linux-gnu' || matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'riscv64gc-unknown-linux-musl'
         shell: bash
         run: |
-          {
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
-            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
-            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
-            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
-            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc"
-          } >> "$GITHUB_ENV"
-          aarch64-linux-gnu-gcc --version
-          aarch64-linux-gnu-g++ --version
-          aarch64-linux-gnu-ar --version
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            {
+              echo "CC_x86_64_unknown_linux_musl=musl-gcc"
+              echo "CXX_x86_64_unknown_linux_musl=musl-gcc"
+              echo "AR_x86_64_unknown_linux_musl=ar"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C target-feature=+crt-static"
+            } >> "$GITHUB_ENV"
+            musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc"
+              echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc"
+              echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++"
+              echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=aarch64-linux-musl-gcc"
+            } >> "$GITHUB_ENV"
+            aarch64-linux-musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "riscv64gc-unknown-linux-musl" ]]; then
+            {
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc"
+              echo "CC_riscv64gc_unknown_linux_musl=riscv64-linux-musl-gcc"
+              echo "CXX_riscv64gc_unknown_linux_musl=riscv64-linux-musl-g++"
+              echo "AR_riscv64gc_unknown_linux_musl=riscv64-linux-musl-ar"
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_RUSTFLAGS=-C linker=riscv64-linux-musl-gcc"
+            } >> "$GITHUB_ENV"
+            riscv64-linux-musl-gcc --version
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            {
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+              echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+              echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc"
+            } >> "$GITHUB_ENV"
+            aarch64-linux-gnu-gcc --version
+            aarch64-linux-gnu-g++ --version
+            aarch64-linux-gnu-ar --version
+          else
+            {
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc"
+              echo "CC_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-gcc"
+              echo "CXX_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-g++"
+              echo "AR_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-ar"
+              echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C linker=riscv64-linux-gnu-gcc"
+            } >> "$GITHUB_ENV"
+            riscv64-linux-gnu-gcc --version
+            riscv64-linux-gnu-g++ --version
+            riscv64-linux-gnu-ar --version
+          fi
 
       - name: Build and package
         shell: bash
         run: |
-          qemu_args=()
-          if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
           language_args=()
           if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]; then
             language_args=(--language zh-CN --translations translations/ci-zh-CN.json)
           fi
+          grammar_args=()
+          if [[ "${{ matrix.grammar }}" == "true" ]]; then
+            grammar_args=(--grammar)
+            if [[ -n "${{ matrix.qemu }}" ]]; then
+              grammar_args+=(--qemu "${{ matrix.qemu }}")
+            fi
+            echo "Grammar generation enabled: ${grammar_args[*]}"
+          else
+            echo "Grammar generation disabled by matrix"
+          fi
           PYTHONPATH=src python -m helix_nightly \
-            --ref "${{ needs.translate.outputs.upstream_sha || env.HELIX_REF }}" \
+            --ref "${{ needs.translate.outputs.upstream_sha || needs.check.outputs.upstream_sha }}" \
             --target "${{ matrix.target }}" \
             --formats "${{ matrix.formats }}" \
-            --grammar "${qemu_args[@]}" "${language_args[@]}" \
+            "${grammar_args[@]}" "${language_args[@]}" \
             --output-dir dist
 
       - name: Verify Linux binary architecture
@@ -292,9 +593,100 @@ jobs:
           file "$binary"
           if [[ "${{ matrix.target }}" == aarch64-* ]]; then
             file "$binary" | grep -qi aarch64
+          elif [[ "${{ matrix.target }}" == riscv64* ]]; then
+            file "$binary" | grep -Eqi 'RISC-V|riscv'
           else
             file "$binary" | grep -Eqi 'x86-64|x86_64'
           fi
+
+      - name: Report compiled grammar libraries
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        shell: bash
+        run: |
+          grammar_dir=.helix-source/runtime/grammars
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" || "${{ matrix.target }}" == "aarch64-pc-windows-msvc" ]]; then
+            pattern='*.dll'
+          else
+            pattern='*.so'
+          fi
+          count=$(find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" | wc -l)
+          bytes=$(find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }')
+          echo "Compiled grammar libraries ($pattern): $count files, $bytes bytes"
+          find "$grammar_dir" -maxdepth 1 -type f -name "$pattern" -printf '%f %s bytes\n' | sort || true
+          if [[ "${{ matrix.grammar }}" == "true" && "$count" == "0" ]]; then
+            echo "warning: grammar was enabled but no $pattern libraries were produced; continuing nightly packaging" >&2
+          fi
+
+      - name: Verify Windows binary architecture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $targetDir = ".helix-source\target"
+          if ("${{ needs.translate.outputs.enabled }}" -eq "true") {
+            $targetDir = "$targetDir\i18n-zh-CN"
+          }
+          $binary = "$targetDir\${{ matrix.target }}\release\hx.exe"
+          if (-not (Test-Path $binary)) {
+            Write-Error "Built Windows binary was not found at $binary"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe was not found at $vswhere"
+          }
+          $installationPath = (& $vswhere -latest -products * -property installationPath).Trim()
+          if (-not $installationPath) {
+            Write-Error "Visual Studio installation was not found"
+          }
+          $dumpbin = Get-ChildItem `
+            -Path (Join-Path $installationPath "VC\Tools\MSVC") `
+            -Filter dumpbin.exe `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $dumpbin) {
+            Write-Error "dumpbin.exe was not found below $installationPath"
+          }
+          Write-Host "Using dumpbin: $($dumpbin.FullName)"
+          $machine = (& $dumpbin.FullName /headers $binary | Select-String -Pattern 'machine \(' | Select-Object -First 1).Line
+          Write-Host $machine
+          if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc" -and $machine -notmatch 'AA64|ARM64') {
+            Write-Error "Expected an ARM64 Windows binary, got: $machine"
+          }
+          if ("${{ matrix.target }}" -eq "x86_64-pc-windows-msvc" -and $machine -notmatch 'x64|8664') {
+            Write-Error "Expected an x86_64 Windows binary, got: $machine"
+          }
+
+      - name: Verify packaged runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "src")
+          from helix_nightly.cli import smoke_test, stage
+
+          source_dir = Path(".helix-source").resolve()
+          target = "${{ matrix.target }}"
+          binary = source_dir / "target" / target / "release" / "hx"
+          staging = stage(source_dir, binary, "smoke", target)
+          try:
+              smoke_test(staging, target, "${{ matrix.qemu }}" or None)
+          finally:
+              import shutil
+              shutil.rmtree(staging, ignore_errors=True)
+          PY
+
+      - name: Report package sizes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          for path in sorted(Path("dist").iterdir()):
+              print(f"{path.name}: {path.stat().st_size} bytes")
+          PY
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
@@ -303,15 +695,20 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  mark-upstream-built:
+    name: Mark upstream SHA as built
+    needs: [check, build]
+    if: always() && github.event_name == 'schedule' && needs.check.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
       - name: Create upstream build marker
-        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
           mkdir -p /tmp/helix-built-marker
           echo "${{ needs.check.outputs.upstream_sha }}" > /tmp/helix-built-marker/sha
+          cat /tmp/helix-built-marker/sha
 
-      - name: Mark upstream SHA as built
-        if: github.event_name == 'schedule' && matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Save upstream build marker
         uses: actions/cache/save@v4
         with:
           path: /tmp/helix-built-marker
@@ -319,11 +716,8 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
-    if: |
-      needs.build.result == 'success' && (
-        github.event_name == 'schedule' || inputs.publish == true
-      )
+    needs: [build, check, translate]
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-22.04
     steps:
       - name: Check out release repository
@@ -337,15 +731,50 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Select release tag
+      - name: Resolve upstream revision
+        id: upstream
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ needs.translate.outputs.upstream_sha || needs.check.outputs.upstream_sha }}
+        run: |
+          if [[ ! "$UPSTREAM_SHA" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            echo "Missing validated upstream commit SHA" >&2
+            exit 1
+          fi
+          echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release tag
         id: tag
         shell: bash
+        env:
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          TRANSLATED: ${{ needs.translate.outputs.enabled }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=nightly-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          if [[ -z "$UPSTREAM_SHA" ]]; then
+            echo "Could not generate a release tag: upstream SHA is empty" >&2
+            exit 1
           fi
+          # Keep the tag short while retaining a non-hex prefix required by GitHub.
+          tag="helix-${UPSTREAM_SHA:0:12}"
+          if [[ "$TRANSLATED" == "true" ]]; then
+            tag="$tag-zh-CN"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Generated release tag: $tag"
+
+      - name: Write release description
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ env.HELIX_REF }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          cat > release-notes.md <<EOF
+          This is an unofficial nightly build of [Helix](https://github.com/helix-editor/helix), published by [helix-nightly-build](https://github.com/${{ github.repository }}).
+
+          The binaries were built from upstream ref $UPSTREAM_REF at commit [$UPSTREAM_SHA](https://github.com/helix-editor/helix/commit/$UPSTREAM_SHA).
+
+          This release is generated by the builder project and is not an official Helix release. It contains the artifacts produced by the successful platform builds for this run, including GNU/Linux, musl Linux, RISC-V Linux, Windows x86_64, and Windows ARM64 where available.
+          EOF
 
       - name: Create Git tag
         shell: bash
@@ -364,9 +793,10 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Helix ${{ steps.tag.outputs.tag }}
           prerelease: true
-          generate_release_notes: true
+          body_path: release-notes.md
           files: dist/*
           fail_on_unmatched_files: true
