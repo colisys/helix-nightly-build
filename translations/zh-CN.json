@@ -1,0 +1,30 @@
+{
+  "language": "zh-CN",
+  "upstream_commit": "ba40e547426b0f9896c8bdc699a4ab11f2b37dbc",
+  "entries": [
+    {
+      "path": "helix-term/src/commands.rs",
+      "line": "                editor.set_status(\"Wrapped around document\");",
+      "source": "\"Wrapped around document\"",
+      "context": "Status message shown when search wraps around the document",
+      "translation": "已从文档另一端继续搜索",
+      "approved": true
+    },
+    {
+      "path": "helix-term/src/commands.rs",
+      "line": "                editor.set_error(\"No more matches\");",
+      "source": "\"No more matches\"",
+      "context": "Error shown when search finds no further results",
+      "translation": "没有更多匹配项",
+      "approved": true
+    },
+    {
+      "path": "helix-term/src/commands.rs",
+      "line": "    cx.editor.set_status(\"Selection saved to jumplist\");",
+      "source": "\"Selection saved to jumplist\"",
+      "context": "Status message after saving a selection to the jump list",
+      "translation": "已将选区保存到跳转列表",
+      "approved": true
+    }
+  ]
+}

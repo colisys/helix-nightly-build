@@ -8,6 +8,14 @@ on:
         required: false
         default: master
         type: string
+      language:
+        description: "Build original or auto-translated zh-CN UI messages"
+        required: false
+        default: original
+        type: choice
+        options:
+          - original
+          - zh-CN
       tag:
         description: Release tag
         required: false
@@ -66,14 +74,80 @@ jobs:
             echo "build_needed=true" >> "$GITHUB_OUTPUT"
           fi
 
+  translate:
+    name: Scan and translate zh-CN UI messages
+    if: github.event_name == 'workflow_dispatch' && inputs.language == 'zh-CN'
+    runs-on: ubuntu-22.04
+    outputs:
+      upstream_sha: ${{ steps.version.outputs.sha }}
+      enabled: ${{ steps.config.outputs.enabled }}
+    steps:
+      - name: Check translation configuration
+        id: config
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_URL: ${{ vars.OPENAI_API_URL }}
+        run: |
+          if [[ -n "$OPENAI_API_KEY" && -n "$OPENAI_API_URL" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Translation endpoint or API key not configured; building original Helix."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out builder
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Check out Helix source
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: helix-editor/helix
+          ref: ${{ env.HELIX_REF }}
+          path: .helix-source
+          fetch-depth: 1
+
+      - name: Set up Python
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Record upstream commit
+        if: steps.config.outputs.enabled == 'true'
+        id: version
+        shell: bash
+        run: echo "sha=$(git -C .helix-source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate translations
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_URL: ${{ vars.OPENAI_API_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: |
+          PYTHONPATH=src python -m helix_nightly.auto_translate \
+            --source-dir .helix-source --language zh-CN --output translations/ci-zh-CN.json
+
+      - name: Upload shared translation table
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-zh-CN-translation-table
+          path: translations/ci-zh-CN.json
+          if-no-files-found: error
+          retention-days: 7
+
   build:
-    name: Build ${{ matrix.target }}
-    needs: [check]
+    name: Build ${{ matrix.target }} (${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }})
+    needs: [check, translate]
     if: |
       always() && (
-        github.event_name == 'workflow_dispatch' ||
-        needs.check.outputs.build_needed == 'true' ||
-        needs.check.result == 'skipped'
+        (github.event_name == 'workflow_dispatch' &&
+          (inputs.language != 'zh-CN' || needs.translate.result == 'success')) ||
+        (github.event_name == 'schedule' && needs.check.outputs.build_needed == 'true')
       )
     strategy:
       fail-fast: false
@@ -100,7 +174,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: helix-editor/helix
-          ref: ${{ env.HELIX_REF }}
+          ref: ${{ needs.translate.outputs.upstream_sha || env.HELIX_REF }}
           path: .helix-source
           fetch-depth: 1
 
@@ -156,6 +230,25 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Download shared translation table
+        if: needs.translate.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-zh-CN-translation-table
+          path: translations
+
+      - name: Verify upstream commit for translation
+        if: needs.translate.outputs.enabled == 'true'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ needs.translate.outputs.upstream_sha }}
+        run: |
+          actual=$(git -C .helix-source rev-parse HEAD)
+          [[ "$actual" == "$EXPECTED_SHA" ]] || {
+            echo "Upstream ref moved between translation and build; refusing mixed versions" >&2
+            exit 1
+          }
+
       - name: Configure ARM64 C/C++ toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
@@ -176,18 +269,26 @@ jobs:
         run: |
           qemu_args=()
           if [[ -n "${{ matrix.qemu }}" ]]; then qemu_args=(--qemu "${{ matrix.qemu }}"); fi
+          language_args=()
+          if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]; then
+            language_args=(--language zh-CN --translations translations/ci-zh-CN.json)
+          fi
           PYTHONPATH=src python -m helix_nightly \
-            --ref "${HELIX_REF}" \
+            --ref "${{ needs.translate.outputs.upstream_sha || env.HELIX_REF }}" \
             --target "${{ matrix.target }}" \
             --formats "${{ matrix.formats }}" \
-            --grammar "${qemu_args[@]}" \
+            --grammar "${qemu_args[@]}" "${language_args[@]}" \
             --output-dir dist
 
       - name: Verify Linux binary architecture
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          binary=".helix-source/target/${{ matrix.target }}/release/hx"
+          target_dir=".helix-source/target"
+          if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]; then
+            target_dir="$target_dir/i18n-zh-CN"
+          fi
+          binary="$target_dir/${{ matrix.target }}/release/hx"
           file "$binary"
           if [[ "${{ matrix.target }}" == aarch64-* ]]; then
             file "$binary" | grep -qi aarch64

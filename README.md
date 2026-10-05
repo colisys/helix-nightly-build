@@ -56,6 +56,102 @@ Options:
 - `--output-dir`: output directory
 - `--source-dir`: reuse an existing checkout
 
+## Compile-time UI translations (experimental)
+
+Each language is compiled into a separate `hx`; there is no runtime translation
+table, AI request, or language switch. The offline table uses **human-selected,
+user-facing editor UI copy**, while CI scans a restricted set of verified UI
+contexts. Do not translate Rust literals indiscriminately: commands, protocol
+identifiers, paths, and data can look like prose. The starter pinned `zh-CN`
+table translates only three search/jump-list messages; CI covers more, but is
+not a complete Chinese interface.
+
+The reviewed table `translations/zh-CN.json` is pinned to upstream commit
+`ba40e547426b0f9896c8bdc699a4ab11f2b37dbc`. Use that exact `--ref` with
+`--language zh-CN`; a different upstream SHA or missing/ambiguous source line
+fails before compilation. The ordinary build without `--language` is unchanged.
+
+```bash
+PYTHONPATH=src python -m helix_nightly \
+  --ref ba40e547426b0f9896c8bdc699a4ab11f2b37dbc \
+  --language zh-CN --target x86_64-unknown-linux-gnu \
+  --formats archive --output-dir dist
+```
+
+Language builds use a separate Cargo target directory and write distinct
+`helix-<commit>-zh-CN-<target>.*` packages and `.sha256` files directly to
+`dist/`, alongside unlocalized packages. To add UI text, identify where it is
+displayed and explicitly extract a literal from a checked-out Helix source:
+
+```bash
+PYTHONPATH=src python -m helix_nightly.i18n \
+  --source-dir .helix-source --extract-path helix-term/src/commands.rs \
+  --extract-text 'No more matches' --context 'Search error shown to users' \
+  --output /tmp/ui-selection.json
+OPENAI_API_KEY=... OPENAI_MODEL=gpt-4o-mini \
+  PYTHONPATH=src python -m helix_nightly.i18n \
+  --source-dir .helix-source --selection /tmp/ui-selection.json \
+  --output /tmp/zh-CN-draft.json
+```
+
+The extractor deliberately handles one exact, unescaped literal at a time; merge
+reviewed entries for larger tables. The draft is **not approved**: inspect each
+meaning and context, then set `approved: true` only after review. The builder
+rejects escapes, backslashes and `{}` format strings rather than risk changing
+Rust semantics; add Rust-aware validation before expanding that scope. Configure
+`OPENAI_API_URL` for an HTTPS OpenAI-compatible endpoint; keep API keys out of
+version control. Run offline checks with `python3 -m unittest discover -s tests`.
+
+### Automatic CI translation
+
+In the repository's **Settings → Secrets and variables → Actions**, configure
+both the repository secret `OPENAI_API_KEY` and the Actions *variable*
+`OPENAI_API_URL` (HTTPS OpenAI-compatible chat-completions endpoint). Optionally
+set `OPENAI_MODEL` (default `gpt-4o-mini`). Never put an API key into a variable,
+workflow input, translation file or source control. Providers receive the scanned
+source strings; review provider data-handling policies before enabling the job.
+
+Start **Run workflow** with `language: zh-CN` and `publish: false` on first use.
+`ref` may be `master` or a pinned Helix SHA. One translation job scans the
+selected upstream checkout, translates in batches of 25, and uploads a validated
+JSON table for all three build jobs. The build jobs use the exact upstream SHA
+from the translation job, so a moving branch cannot mix revisions. If either
+the endpoint or API key is absent, automatic translation is skipped and the
+workflow builds and labels **original** Helix, without a `zh-CN` suffix or
+translation artifact, even when `zh-CN` was requested. Once both are configured,
+malformed endpoints, API failures or source drift fail the translation job;
+they never trigger an English fallback. Local builds using an explicit,
+reviewed translation table are independent of these API credentials.
+
+**Scope is intentionally conservative:** simple, single-line literals passed
+directly to `editor.set_status(...)` / `editor.set_error(...)`, static keymap
+command descriptions, `typed.rs` command/flag `doc` fields, and four verified
+surrounding-pair popup titles in `helix-term/src/**/*.rs` are eligible. Direct
+status/error literals in `helix-view/src/**/*.rs` and three Helix-authored DAP/LSP
+prompt labels are also eligible. On the pinned upstream commit this scanner
+selects 457 strings (36 status/error, 312 keymap descriptions, 102 typed/flag
+descriptions, 4 popup titles and 3 prompt labels); this is a
+count of *selected strings*, **not a percentage of all Helix UI text**. Escapes,
+format placeholders, duplicate source lines and dynamic expressions are skipped.
+Other prompt/picker labels, formatted errors, other crates and runtime-supplied
+messages remain untranslated; LSP/DAP responses, plugins and document content
+are outside the localization boundary. In particular, some picker column names
+are also internal lookup keys and must not be blindly replaced. This is **not
+full Helix localization**; AI output is validated structurally but neither
+semantically reviewed nor guaranteed to be idiomatic. CI-generated entries have
+`generated_by: auto_translate` and `approved: false`; only the explicit CI build
+table path accepts machine drafts. This is not a human approval marker. Inspect
+the translation artifact before publishing. Scheduled builds and `original`
+manual builds do not call the AI API. The existing pinned table remains available
+for offline `zh-CN` builds using `--translations translations/zh-CN.json`.
+
+To audit work still needing classification, run
+`PYTHONPATH=src python -m helix_nightly.ui_inventory --source-dir .helix-source`.
+It emits JSON candidate call sites with file/line and selected-vs-review-needed
+labels, including calls whose arguments may come from LSP/DAP. It does not send
+anything to the AI provider and its call-site counts are **not** a complete-UI
+coverage percentage or permission to translate dynamic values.
+
 ## GitHub Actions
 
 Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs weekly on Mondays and Thursdays at 03:17 UTC, creates an annotated Git tag such as `nightly-YYYYMMDD`, and publishes a prerelease using that tag. Manual runs can select the Helix ref and release tag, or set `publish` to false to only build artifacts. If a selected tag already exists, the workflow reuses it and updates the Release assets without force-moving the tag.

@@ -14,6 +14,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
+from . import i18n
+
 DEFAULT_REPO = "https://github.com/helix-editor/helix.git"
 
 
@@ -44,15 +46,17 @@ def run(
 
 def checkout(repo: str, ref: str, source_dir: Path) -> None:
     if source_dir.exists() and (source_dir / ".git").exists():
+        if run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=source_dir):
+            raise RuntimeError(f"Refusing to overwrite modified upstream source: {source_dir}")
         run(["git", "fetch", "--depth", "1", "origin", ref], cwd=source_dir)
-        run(["git", "checkout", "--force", "FETCH_HEAD"], cwd=source_dir)
+        run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=source_dir)
         return
     if source_dir.exists():
-        shutil.rmtree(source_dir)
+        raise RuntimeError(f"Refusing to remove existing non-Git source directory: {source_dir}")
     source_dir.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "clone", "--depth", "1", repo, str(source_dir)])
     run(["git", "fetch", "--depth", "1", "origin", ref], cwd=source_dir)
-    run(["git", "checkout", "--force", "FETCH_HEAD"], cwd=source_dir)
+    run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=source_dir)
 
 
 def host_target() -> str:
@@ -240,14 +244,39 @@ def build(args: argparse.Namespace) -> list[Path]:
     output_dir = Path(args.output_dir).resolve()
     source_dir = Path(args.source_dir).resolve() if args.source_dir else Path(".helix-source").resolve()
     checkout(args.repo, args.ref, source_dir)
+    originals: dict[Path, tuple[bytes, bytes]] = {}
+    if args.language:
+        if not i18n.LANGUAGE.fullmatch(args.language):
+            raise ValueError("invalid language code")
+        table = Path(args.translations or f"translations/{args.language}.json")
+        # Only the explicit CI table path may contain unreviewed AI output.
+        machine = args.translations == "translations/ci-zh-CN.json" and args.language == "zh-CN"
+        data = i18n.load(table, source_dir, approved=True, allow_machine=machine)
+        if data["language"] != args.language:
+            raise ValueError(f"translation table language does not match {args.language}")
+        originals = i18n.apply(source_dir, data)
+    try:
+        return _build_source(args, source_dir, output_dir)
+    finally:
+        i18n.restore(originals)
+
+
+def _build_source(args: argparse.Namespace, source_dir: Path, output_dir: Path) -> list[Path]:
     version = run(["git", "rev-parse", "--short=12", "HEAD"], cwd=source_dir)
+    if args.language:
+        version += f"-{args.language}"
     target = args.target or host_target()
     toolchain: str | None = None
     if args.target:
         # Helix may provide rust-toolchain.toml. Install the target in the
         # toolchain selected from the source directory, not the builder root.
         active = run(["rustup", "show", "active-toolchain"], cwd=source_dir)
-        toolchain = active.split()[0]
+        # rustup can print installation progress before the actual toolchain.
+        selected = [line.split()[0] for line in active.splitlines()
+                    if line and not line.startswith("info:")]
+        if len(selected) != 1:
+            raise RuntimeError(f"Could not determine active Rust toolchain: {active}")
+        toolchain = selected[0]
         print(f"Using Rust toolchain {toolchain} for target {target}")
         run(["rustup", "target", "add", "--toolchain", toolchain, target], cwd=source_dir)
         sysroot = Path(run(["rustc", "+" + toolchain, "--print", "sysroot"], cwd=source_dir))
@@ -263,6 +292,8 @@ def build(args: argparse.Namespace) -> list[Path]:
     if args.target:
         cargo_args += ["--target", target]
     build_env: dict[str, str] = {"HELIX_DISABLE_AUTO_GRAMMAR_BUILD": "1"}
+    if args.language:
+        build_env["CARGO_TARGET_DIR"] = str(source_dir / "target" / f"i18n-{args.language}")
     if target.endswith("-linux-gnu"):
         build_env["HELIX_DEFAULT_RUNTIME"] = "/usr/lib/helix/runtime"
     if target == "aarch64-unknown-linux-gnu":
@@ -277,7 +308,8 @@ def build(args: argparse.Namespace) -> list[Path]:
     print(f"Building for target {target}; host toolchain is {toolchain or host_target()}")
     run(cargo_args, cwd=source_dir, env=build_env)
     binary_name = "hx.exe" if target.endswith("-windows-msvc") else "hx"
-    binary_dir = source_dir / "target" / target / "release" if args.target else source_dir / "target" / "release"
+    target_dir = Path(build_env.get("CARGO_TARGET_DIR", source_dir / "target"))
+    binary_dir = target_dir / target / "release" if args.target else target_dir / "release"
     binary = binary_dir / binary_name
     if not binary.is_file():
         raise FileNotFoundError(f"Built Helix binary not found: {binary}")
@@ -330,6 +362,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--target", help="Rust target triple")
     result.add_argument("--output-dir", default="dist")
     result.add_argument("--source-dir")
+    result.add_argument("--language", help="compiled-in language (e.g. zh-CN)")
+    result.add_argument("--translations", help="reviewed JSON table; defaults to translations/LANGUAGE.json")
     result.add_argument("--grammar", action="store_true", help="run hx --grammar fetch/build")
     result.add_argument("--qemu", help="QEMU executable to prefix grammar commands")
     result.add_argument("--formats", default="archive", help="comma-separated: archive,deb,rpm,exe,msi")
@@ -339,6 +373,6 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     try:
         build(parser().parse_args())
-    except (subprocess.CalledProcessError, OSError, RuntimeError) as error:
+    except (subprocess.CalledProcessError, OSError, RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)
