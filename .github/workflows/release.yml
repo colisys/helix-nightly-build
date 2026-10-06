@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/helix-built-marker
-          key: helix-built-${{ steps.resolve.outputs.sha }}
+          key: helix-built-i18n-v2-${{ steps.resolve.outputs.sha }}
 
       - name: Determine whether build is needed
         id: decide
@@ -92,7 +92,10 @@ jobs:
   translate:
     name: Scan and translate zh-CN UI messages
     needs: [check]
-    if: github.event_name == 'workflow_dispatch' && inputs.language == 'zh-CN'
+    if: |
+      needs.check.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.language == 'zh-CN') ||
+       (github.event_name == 'schedule' && needs.check.outputs.build_needed == 'true'))
     runs-on: ubuntu-22.04
     outputs:
       upstream_sha: ${{ steps.version.outputs.sha }}
@@ -159,10 +162,12 @@ jobs:
 
   select-platform:
     name: Select build platforms
-    needs: [check]
+    needs: [check, translate]
     if: |
       always() && needs.check.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' || needs.check.outputs.build_needed == 'true')
+      (github.event_name == 'workflow_dispatch' || needs.check.outputs.build_needed == 'true') &&
+      (needs.translate.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && inputs.language != 'zh-CN' && needs.translate.result == 'skipped'))
     runs-on: ubuntu-22.04
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
@@ -173,6 +178,8 @@ jobs:
         env:
           PLATFORM: ${{ inputs.platform || 'all' }}
           EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_LANGUAGE: ${{ inputs.language || 'original' }}
+          TRANSLATION_ENABLED: ${{ needs.translate.outputs.enabled }}
         run: |
           python - <<'PY'
           import json
@@ -199,13 +206,20 @@ jobs:
               selected = [item for item in selected if item["target"] == platform]
           if not selected:
               raise SystemExit(f"Unknown platform: {platform}")
+          # A scheduled run publishes original and every available translation
+          # from the same upstream SHA. Manual runs keep a single selected variant.
+          translated = os.environ["TRANSLATION_ENABLED"] == "true"
+          languages = (["", "zh-CN"] if translated else [""]) if os.environ["EVENT_NAME"] == "schedule" else (
+              ["zh-CN"] if translated and os.environ["REQUESTED_LANGUAGE"] == "zh-CN" else [""]
+          )
+          selected = [dict(item, language=language) for item in selected for language in languages]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print(f"matrix={json.dumps({'include': selected}, separators=(',', ':'))}", file=output)
           print(json.dumps(selected, indent=2))
           PY
 
   build:
-    name: Build ${{ matrix.target }} (${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }})
+    name: Build ${{ matrix.target }} (${{ matrix.language || 'original' }})
     needs: [check, select-platform, translate]
     if: |
       always() &&
@@ -221,7 +235,7 @@ jobs:
       matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     env:
-      BUILD_LANGUAGE: ${{ needs.translate.outputs.enabled == 'true' && inputs.language || '' }}
+      BUILD_LANGUAGE: ${{ matrix.language }}
     steps:
       - name: Check out builder
         uses: actions/checkout@v4
@@ -429,14 +443,14 @@ jobs:
           python-version: "3.x"
 
       - name: Download shared translation table
-        if: needs.translate.outputs.enabled == 'true'
+        if: matrix.language != ''
         uses: actions/download-artifact@v4
         with:
           name: ci-zh-CN-translation-table
           path: translations
 
       - name: Verify upstream commit for translation
-        if: needs.translate.outputs.enabled == 'true'
+        if: matrix.language != ''
         shell: bash
         env:
           EXPECTED_SHA: ${{ needs.translate.outputs.upstream_sha }}
@@ -744,7 +758,7 @@ jobs:
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: helix-${{ matrix.target }}
+          name: helix-${{ matrix.target }}-${{ matrix.language || 'original' }}
           path: dist/*
           if-no-files-found: error
 
@@ -765,7 +779,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/helix-built-marker
-          key: helix-built-${{ needs.check.outputs.upstream_sha }}
+          key: helix-built-i18n-v2-${{ needs.check.outputs.upstream_sha }}
 
   release:
     name: Create GitHub Release
@@ -782,6 +796,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: helix-*
           merge-multiple: true
 
       - name: Resolve upstream revision
@@ -809,7 +824,7 @@ jobs:
           fi
           # Keep the tag short while retaining a non-hex prefix required by GitHub.
           tag="helix-${UPSTREAM_SHA:0:12}"
-          if [[ "$TRANSLATED" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "$TRANSLATED" == "true" ]]; then
             tag="$tag-zh-CN"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

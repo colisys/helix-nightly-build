@@ -40,18 +40,30 @@ class DarwinWorkflowTests(unittest.TestCase):
         source = step(self.workflow, "Select matrix")
         script = source.split("          python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
         script = "\n".join(line[10:] for line in script.splitlines())
-        for event, platform, expected_count in (("workflow_dispatch", "all", 10),
-                                                ("schedule", "all", 8),
-                                                ("workflow_dispatch", "aarch64-apple-darwin", 1),
-                                                ("workflow_dispatch", "x86_64-apple-darwin", 1)):
-            with self.subTest(event=event, platform=platform), tempfile.TemporaryDirectory() as tmp:
+        for event, platform, requested, enabled, expected_count in (
+            ("workflow_dispatch", "all", "original", "false", 10),
+            ("workflow_dispatch", "all", "zh-CN", "true", 10),
+            ("workflow_dispatch", "all", "zh-CN", "false", 10),
+            ("schedule", "all", "original", "true", 16),
+            ("schedule", "all", "original", "false", 8),
+            ("workflow_dispatch", "aarch64-apple-darwin", "original", "false", 1),
+            ("workflow_dispatch", "x86_64-apple-darwin", "original", "false", 1),
+        ):
+            with self.subTest(event=event, platform=platform, enabled=enabled), tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp) / "output"
                 with patch.dict(os.environ, {"EVENT_NAME": event, "PLATFORM": platform,
+                                             "REQUESTED_LANGUAGE": requested,
+                                             "TRANSLATION_ENABLED": enabled,
                                              "GITHUB_OUTPUT": str(output)}), \
                      contextlib.redirect_stdout(io.StringIO()):
                     exec(compile(script, "select matrix", "exec"), {})
                 matrix = json.loads(output.read_text().split("matrix=", 1)[1])
                 self.assertEqual(len(matrix["include"]), expected_count)
+                self.assertEqual(len({(item["target"], item["language"])
+                                      for item in matrix["include"]}), expected_count)
+                languages = {item["language"] for item in matrix["include"]}
+                self.assertEqual(languages, {"", "zh-CN"} if event == "schedule" and enabled == "true"
+                                 else {"zh-CN"} if requested == "zh-CN" and enabled == "true" else {""})
                 if event == "schedule":
                     self.assertTrue(all(not item["target"].endswith("-apple-darwin")
                                         for item in matrix["include"]))
@@ -61,6 +73,8 @@ class DarwinWorkflowTests(unittest.TestCase):
             output = Path(tmp) / "output"
             with patch.dict(os.environ, {"EVENT_NAME": "schedule",
                                          "PLATFORM": "aarch64-apple-darwin",
+                                         "REQUESTED_LANGUAGE": "original",
+                                         "TRANSLATION_ENABLED": "true",
                                          "GITHUB_OUTPUT": str(output)}):
                 with self.assertRaisesRegex(SystemExit, "Unknown platform"):
                     exec(compile(script, "select matrix", "exec"), {})
