@@ -101,11 +101,12 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_URL: ${{ vars.OPENAI_API_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
         run: |
-          if [[ -n "$OPENAI_API_KEY" && -n "$OPENAI_API_URL" ]]; then
+          if [[ -n "$OPENAI_API_KEY" && -n "$OPENAI_API_URL" && -n "$OPENAI_MODEL" ]]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Translation endpoint or API key not configured; building original Helix."
+            echo "Translation endpoint, API key, or model not configured; building original Helix."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 

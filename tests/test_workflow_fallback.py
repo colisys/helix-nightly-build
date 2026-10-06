@@ -20,13 +20,17 @@ class FallbackWorkflowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_credential_gate_needs_both_values_and_does_not_print_them(self):
+    def test_translation_gate_needs_all_three_values_and_does_not_print_them(self):
         config = step(self.text, "Check translation configuration")
         self.assertIn("secrets.OPENAI_API_KEY", config)
         self.assertIn("vars.OPENAI_API_URL", config)
-        self.assertIn('[[ -n "$OPENAI_API_KEY" && -n "$OPENAI_API_URL" ]]', config)
+        self.assertIn("vars.OPENAI_MODEL", config)
+        self.assertIn('[[ -n "$OPENAI_API_KEY" && -n "$OPENAI_API_URL" && -n "$OPENAI_MODEL" ]]', config)
         self.assertIn('echo "enabled=false" >> "$GITHUB_OUTPUT"', config)
         self.assertNotIn('echo "$OPENAI_API_KEY"', config)
+        generate = step(self.text, "Generate translations")
+        self.assertIn("OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}", generate)
+        self.assertIn("if: steps.config.outputs.enabled == 'true'", generate)
 
     def test_translation_steps_and_artifact_require_enabled(self):
         self.assertIn("enabled: ${{ steps.config.outputs.enabled }}", self.text)

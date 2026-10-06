@@ -110,9 +110,10 @@ version control. Run offline checks with `python3 -m unittest discover -s tests`
 ### Automatic CI translation
 
 In the repository's **Settings → Secrets and variables → Actions**, configure
-both the repository secret `OPENAI_API_KEY` and the Actions *variable*
-`OPENAI_API_URL` (HTTPS OpenAI-compatible chat-completions endpoint). Optionally
-set `OPENAI_MODEL` (default `gpt-4o-mini`). Never put an API key into a variable,
+the repository secret `OPENAI_API_KEY` and the Actions *variables*
+`OPENAI_API_URL` (HTTPS OpenAI-compatible chat-completions endpoint) and
+`OPENAI_MODEL` (your provider's model ID). All three must be nonempty; otherwise
+automatic i18n is skipped. Never put an API key into a variable,
 workflow input, translation file or source control. Providers receive the scanned
 source strings; review provider data-handling policies before enabling the job.
 
@@ -122,10 +123,10 @@ no dry-run switch. Inspect the generated translation artifact and Release assets
 `ref` may be `master` or a pinned Helix SHA. One translation job scans the
 selected upstream checkout, translates in batches of 25, and uploads a validated
 JSON table for the selected platform jobs (up to eight). The jobs use the exact
-upstream SHA from the translation job. If either
-the endpoint or API key is absent, automatic translation is skipped and the
-workflow builds and labels **original** Helix, without a `zh-CN` suffix or
-translation artifact, even when `zh-CN` was requested. Once both are configured,
+upstream SHA from the translation job. If the endpoint, API key, or model is
+absent, automatic translation is skipped and the workflow builds and labels
+**original** Helix, without a `zh-CN` suffix or translation artifact, even when
+`zh-CN` was requested. Once all three are configured,
 malformed endpoints, API failures or source drift fail the translation job;
 they never trigger an English fallback. Local builds using an explicit,
 reviewed translation table are independent of these API credentials.
