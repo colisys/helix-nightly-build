@@ -16,8 +16,12 @@ The workflow builds:
 - Linux `riscv64gc-unknown-linux-musl` (RISC-V 64 musl): `.deb`, `.rpm`, `.apk`, `.tar.gz`
 - Windows `x86_64-pc-windows-msvc`: Inno Setup `.exe` installer, `.zip`
 - Windows `aarch64-pc-windows-msvc` (ARM64): Inno Setup `.exe` installer, `.zip` (an x86_64 host `hx.exe` drives grammar generation while MSVC cross-compiles the grammar DLLs for ARM64)
+- macOS `x86_64-apple-darwin`: `.tar.gz` (native Intel runner)
+- macOS `aarch64-apple-darwin`: `.tar.gz` (native Apple Silicon runner)
 
 Each output also gets a `.sha256` checksum. The Windows `.exe` is an Inno Setup installer containing the native `hx.exe` and the `runtime` directory. Linux packages are produced with `nfpm`; the workflow follows the official installation method `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest` and invokes `nfpm pkg --packager deb|rpm|apk`. See the [nfpm Quick Start](https://nfpm.goreleaser.com/docs/quick-start/).
+
+macOS archives contain `hx` and the runtime directory; they are not signed or notarized, so macOS Gatekeeper may require manual approval. Select either Darwin target (or `all`) with **Run workflow** to build on native macOS runners; scheduled builds retain the existing Linux/Windows matrix. macOS runners may have different availability or billing than Linux runners; check repository runner access before selecting `all`.
 
 ## Build-time grammar generation
 

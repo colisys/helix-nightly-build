@@ -200,7 +200,10 @@ def smoke_test(staging: Path, target: str, qemu: str | None) -> None:
     }
     print(f"Running package smoke test with runtime {runtime}")
     run(["file", str(binary)], cwd=root)
-    run(["readelf", "-l", str(binary)], cwd=root)
+    if target.endswith("-apple-darwin"):
+        run(["otool", "-hv", str(binary)], cwd=root)
+    else:
+        run(["readelf", "-l", str(binary)], cwd=root)
     for command in (("--version",), ("--health", "languages")):
         run(prefix + [str(binary), *command], cwd=root, env=smoke_env)
 
