@@ -34,6 +34,9 @@ class FallbackWorkflowTests(unittest.TestCase):
 
     def test_translation_steps_and_artifact_require_enabled(self):
         self.assertIn("enabled: ${{ steps.config.outputs.enabled }}", self.text)
+        translate_job = self.text.split("  translate:\n", 1)[1].split("  select-platform:\n", 1)[0]
+        self.assertIn("    needs: [check]\n", translate_job)
+        self.assertIn("ref: ${{ needs.check.outputs.upstream_sha }}", translate_job)
         for name in ("Check out Helix source", "Generate translations",
                      "Upload shared translation table", "Download shared translation table",
                      "Verify upstream commit for translation"):

@@ -93,6 +93,38 @@ def scan(source_dir: Path) -> list[dict]:
     return entries
 
 
+def _answers(response) -> list:
+    """Parse an OpenAI-compatible response without exposing provider data in errors."""
+    raw = response.read()
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError, UnicodeDecodeError):
+        raise ValueError("translation API returned an empty or non-JSON HTTP response") from None
+    if not isinstance(body, dict):
+        raise ValueError("translation API response must be a JSON object")
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ValueError("translation API response has no choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise ValueError("translation API response has no message")
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("translation API message.content is empty or not text")
+    content = content.strip()
+    # Some compatible providers wrap otherwise valid JSON in a markdown fence.
+    fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        content = fenced.group(1)
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        raise ValueError("translation API message.content is not JSON; check model JSON-mode support") from None
+    if not isinstance(parsed, dict) or "translations" not in parsed:
+        raise ValueError("translation API message.content lacks translations")
+    return parsed["translations"]
+
+
 def translate(source_dir: Path, output: Path, language: str = "zh-CN") -> int:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite {output}")
@@ -128,8 +160,7 @@ def translate(source_dir: Path, output: Path, language: str = "zh-CN") -> int:
         request = urllib.request.Request(url, payload, {
             "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=120) as response:
-            body = json.load(response)
-        answers = json.loads(body["choices"][0]["message"]["content"])["translations"]
+            answers = _answers(response)
         if (not isinstance(answers, list) or len(answers) != len(batch)
                 or any(not isinstance(answer, dict) or type(answer.get("id")) is not int
                        or answer["id"] != idx or not isinstance(answer.get("text"), str)

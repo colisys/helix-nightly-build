@@ -26,6 +26,31 @@ class Response:
         return json.dumps({"choices": [{"message": {"content": self.content}}]}).encode()
 
 
+class RawResponse(Response):
+    def read(self):
+        return self.content
+
+
+class ResponseParserTests(unittest.TestCase):
+    def test_outer_response_errors_are_safe(self):
+        for raw in (b"", b"<html>provider secret</html>", b"[]"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "translation API response|HTTP response") as error:
+                    auto_translate._answers(RawResponse(raw))
+                self.assertNotIn("provider secret", str(error.exception))
+
+    def test_content_errors_are_safe(self):
+        for content in ("", "   ", "provider secret", None, {"translations": []}):
+            with self.subTest(content=content):
+                with self.assertRaises(ValueError) as error:
+                    auto_translate._answers(Response(content))
+                self.assertNotIn("provider secret", str(error.exception))
+
+    def test_valid_fenced_content(self):
+        answers = auto_translate._answers(Response('```json\n{"translations": []}\n```'))
+        self.assertEqual(answers, [])
+
+
 class BatchTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

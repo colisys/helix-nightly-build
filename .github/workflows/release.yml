@@ -89,6 +89,7 @@ jobs:
 
   translate:
     name: Scan and translate zh-CN UI messages
+    needs: [check]
     if: github.event_name == 'workflow_dispatch' && inputs.language == 'zh-CN'
     runs-on: ubuntu-22.04
     outputs:
