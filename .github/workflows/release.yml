@@ -212,6 +212,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    env:
+      BUILD_LANGUAGE: ${{ needs.translate.outputs.enabled == 'true' && inputs.language || '' }}
     steps:
       - name: Check out builder
         uses: actions/checkout@v4
@@ -245,9 +247,9 @@ jobs:
             ~/.cache/pip
             .helix-source/target
             .helix-source/runtime/grammars
-          key: helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }}-ziglang-0.16.0-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
+          key: helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ env.BUILD_LANGUAGE || 'original' }}-ziglang-0.16.0-${{ steps.source-revision.outputs.sha }}-${{ hashFiles('.helix-source/Cargo.lock', '.helix-source/rust-toolchain.toml', '.helix-source/rust-toolchain', '.helix-source/runtime/languages.toml') }}
           restore-keys: |
-            helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ needs.translate.outputs.enabled == 'true' && 'zh-CN' || 'original' }}-ziglang-0.16.0-
+            helix-build-v3-${{ runner.os }}-${{ matrix.target }}-${{ env.BUILD_LANGUAGE || 'original' }}-ziglang-0.16.0-
 
       - name: Report build cache
         shell: bash
@@ -563,8 +565,8 @@ jobs:
         shell: bash
         run: |
           language_args=()
-          if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]; then
-            language_args=(--language zh-CN --translations translations/ci-zh-CN.json)
+          if [[ -n "$BUILD_LANGUAGE" ]]; then
+            language_args=(--language "$BUILD_LANGUAGE" --translations "translations/ci-${BUILD_LANGUAGE}.json")
           fi
           grammar_args=()
           if [[ "${{ matrix.grammar }}" == "true" ]]; then
@@ -588,8 +590,8 @@ jobs:
         shell: bash
         run: |
           target_dir=".helix-source/target"
-          if [[ "${{ needs.translate.outputs.enabled }}" == "true" ]]; then
-            target_dir="$target_dir/i18n-zh-CN"
+          if [[ -n "$BUILD_LANGUAGE" ]]; then
+            target_dir="$target_dir/i18n-${BUILD_LANGUAGE}"
           fi
           binary="$target_dir/${{ matrix.target }}/release/hx"
           file "$binary"
@@ -624,8 +626,8 @@ jobs:
         shell: pwsh
         run: |
           $targetDir = ".helix-source\target"
-          if ("${{ needs.translate.outputs.enabled }}" -eq "true") {
-            $targetDir = "$targetDir\i18n-zh-CN"
+          if ($env:BUILD_LANGUAGE) {
+            $targetDir = Join-Path $targetDir "i18n-$env:BUILD_LANGUAGE"
           }
           $binary = "$targetDir\${{ matrix.target }}\release\hx.exe"
           if (-not (Test-Path $binary)) {
@@ -664,6 +666,7 @@ jobs:
         shell: bash
         run: |
           PYTHONPATH=src python - <<'PY'
+          import os
           from pathlib import Path
           import sys
           sys.path.insert(0, "src")
@@ -671,7 +674,11 @@ jobs:
 
           source_dir = Path(".helix-source").resolve()
           target = "${{ matrix.target }}"
-          binary = source_dir / "target" / target / "release" / "hx"
+          target_dir = source_dir / "target"
+          language = os.environ.get("BUILD_LANGUAGE")
+          if language:
+              target_dir = target_dir / f"i18n-{language}"
+          binary = target_dir / target / "release" / "hx"
           staging = stage(source_dir, binary, "smoke", target)
           try:
               smoke_test(staging, target, "${{ matrix.qemu }}" or None)
