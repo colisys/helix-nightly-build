@@ -1,5 +1,10 @@
 # Helix nightly build
 
+> [!CAUTION]
+> It's **not** a official release.
+> **Do not** submit any issues regarding this pre-release to the official team.
+> Use at your own risk.
+
 [![Build and release Helix nightly](https://github.com/colisys/helix-nightly-build/actions/workflows/release.yml/badge.svg)](https://github.com/colisys/helix-nightly-build/actions/workflows/release.yml)
 
 This project builds the upstream [Helix](https://github.com/helix-editor/helix) repository and publishes platform packages as a GitHub Release.
