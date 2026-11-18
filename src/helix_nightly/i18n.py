@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 LANGUAGE = re.compile(r"[a-z]{2,3}(?:-[A-Z]{2})?\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+USER_AGENT = "GitHubCopilot/1.0"
 
 
 def _entries(data: dict) -> list[dict]:
@@ -189,7 +190,8 @@ def generate(selection: Path, source_dir: Path, output: Path, language: str) -> 
             {"role": "user", "content": f"Context: {entry['context']}\nText: {original}"},
         ]}).encode("utf-8")
         request = urllib.request.Request(url, payload, {
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json"
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         })
         with urllib.request.urlopen(request, timeout=60) as response:
             answer = json.load(response)["choices"][0]["message"]["content"]

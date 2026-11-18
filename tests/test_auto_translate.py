@@ -140,6 +140,7 @@ class BatchTests(unittest.TestCase):
              patch.object(auto_translate.urllib.request, "urlopen", return_value=Response(answer)) as request:
             self.assertEqual(auto_translate.translate(self.root, self.out), 6)
         self.assertTrue(request.called)
+        self.assertEqual(request.call_args[0][0].get_header("User-agent"), "GitHubCopilot/1.0")
         data = json.loads(self.out.read_text())
         self.assertEqual(data["upstream_commit"], SHA)
         self.assertEqual(data["generated_by"], "auto_translate")

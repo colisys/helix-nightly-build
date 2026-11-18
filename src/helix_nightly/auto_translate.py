@@ -158,7 +158,8 @@ def translate(source_dir: Path, output: Path, language: str = "zh-CN") -> int:
             {"role": "user", "content": json.dumps(messages, ensure_ascii=False)}
         ]}, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(url, payload, {
-            "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+            "User-Agent": i18n.USER_AGENT})
         with urllib.request.urlopen(request, timeout=120) as response:
             answers = _answers(response)
         if (not isinstance(answers, list) or len(answers) != len(batch)
