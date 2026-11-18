@@ -55,6 +55,19 @@ class FallbackWorkflowTests(unittest.TestCase):
         for name in ("Download shared translation table", "Verify upstream commit for translation"):
             self.assertIn("if: matrix.language != ''", step(self.text, name))
 
+    def test_language_all_builds_original_and_translated_variants(self):
+        inputs = self.text.split("      language:\n", 1)[1].split("      platform:\n", 1)[0]
+        self.assertIn("          - all\n", inputs)
+        translate_job = self.text.split("  translate:\n", 1)[1].split("  select-platform:\n", 1)[0]
+        self.assertIn("inputs.language == 'all'", translate_job)
+        select_job = self.text.split("  select-platform:\n", 1)[1].split("  build:\n", 1)[0]
+        self.assertIn("inputs.language != 'all'", select_job)
+        build_job = self.text.split("  build:\n", 1)[1].split("  mark-upstream-built:\n", 1)[0]
+        self.assertIn("inputs.language != 'all'", build_job)
+        tag = step(self.text, "Generate release tag")
+        self.assertIn("REQUESTED_LANGUAGE: ${{ inputs.language || 'original' }}", tag)
+        self.assertIn('"$REQUESTED_LANGUAGE" != "all"', tag)
+
     def test_build_flags_and_architecture_follow_actual_translation(self):
         build = step(self.text, "Build and package")
         arch = step(self.text, "Verify Linux binary architecture")

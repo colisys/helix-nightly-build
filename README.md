@@ -127,7 +127,10 @@ workflow input, translation file or source control. Providers receive the scanne
 source strings; review provider data-handling policies before enabling the job.
 
 Start **Run workflow** with `language: zh-CN` and choose a single `platform` for
-the first run. The workflow publishes successful builds automatically; there is
+the first run. Select `language: all` to build the original and auto-translated
+variants for every selected platform in one run; that combined release uses the
+base tag, while a `zh-CN`-only run uses the `-zh-CN` tag. The workflow publishes
+successful builds automatically; there is
 no dry-run switch. Inspect the generated translation artifact and Release assets.
 `ref` may be `master` or a pinned Helix SHA. One translation job scans the
 selected upstream checkout, translates in batches of 25, and uploads a validated
@@ -135,7 +138,7 @@ JSON table for the selected platform jobs (up to eight). The jobs use the exact
 upstream SHA from the translation job. If the endpoint, API key, or model is
 absent, automatic translation is skipped and the workflow builds and labels
 **original** Helix, without a `zh-CN` suffix or translation artifact, even when
-`zh-CN` was requested. Once all three are configured,
+`zh-CN` or `all` was requested. Once all three are configured,
 malformed endpoints, API failures or source drift fail the translation job;
 they never trigger an English fallback. Local builds using an explicit,
 reviewed translation table are independent of these API credentials.
@@ -184,7 +187,7 @@ act workflow_dispatch \\
 
 ## GitHub Actions
 
-Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs daily at 03:17 UTC, checks the upstream Helix commit, and publishes an unofficial prerelease using an automatically generated short tag such as `helix-079a789e8cb0`. The `helix-` prefix is required because GitHub rejects tags consisting solely of 40 or 64 hexadecimal characters. The tag uses the first 12 characters of the upstream commit; manually selected translated builds use a separate `-zh-CN` tag, while scheduled runs publish original and translated assets together under the base tag. The Release body identifies the upstream Helix ref and full commit; automatic notes from this builder repository are disabled. Manual runs select the Helix ref, platform, and optional language. Set `platform` to `all` for the complete matrix or choose one target to run only that platform; scheduled runs use the Linux/Windows platform matrix (macOS remains manual-only). Once all selected build matrix jobs succeed, the Release job runs automatically; if an identical upstream commit is rebuilt, the workflow reuses its generated tag and updates the Release assets without force-moving the tag.
+Push this project to GitHub, then use `Actions -> Build and release Helix -> Run workflow`. The scheduled workflow runs daily at 03:17 UTC, checks the upstream Helix commit, and publishes an unofficial prerelease using an automatically generated short tag such as `helix-079a789e8cb0`. The `helix-` prefix is required because GitHub rejects tags consisting solely of 40 or 64 hexadecimal characters. The tag uses the first 12 characters of the upstream commit; manually selected `zh-CN`-only builds use a separate `-zh-CN` tag, while `language: all` and scheduled runs publish original and translated assets together under the base tag. The Release body identifies the upstream Helix ref and full commit; automatic notes from this builder repository are disabled. Manual runs select the Helix ref, platform, and optional language (`original`, `zh-CN`, or `all` for both variants under the base tag). Set `platform` to `all` for the complete matrix or choose one target to run only that platform; scheduled runs use the Linux/Windows platform matrix (macOS remains manual-only). Once all selected build matrix jobs succeed, the Release job runs automatically; if an identical upstream commit is rebuilt, the workflow reuses its generated tag and updates the Release assets without force-moving the tag.
 
 Every run first checks whether the selected upstream Helix ref resolves successfully and whether its SHA has already been built with the current i18n matrix. On scheduled runs, a matching cached marker skips the build to save CI minutes; the marker key is versioned so older original-only runs do not suppress the first translated run for the same SHA. Manual `workflow_dispatch` runs always proceed with the selected platform, even when the SHA already has a cached marker. On scheduled runs, the upstream-built marker is saved by a separate job that depends on the entire build matrix, so a partial or failed matrix never marks the upstream SHA as successfully built. Manual single-platform runs do not write this full-matrix marker.
 

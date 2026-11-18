@@ -44,10 +44,13 @@ class DarwinWorkflowTests(unittest.TestCase):
             ("workflow_dispatch", "all", "original", "false", 10),
             ("workflow_dispatch", "all", "zh-CN", "true", 10),
             ("workflow_dispatch", "all", "zh-CN", "false", 10),
+            ("workflow_dispatch", "all", "all", "true", 20),
+            ("workflow_dispatch", "all", "all", "false", 10),
             ("schedule", "all", "original", "true", 16),
             ("schedule", "all", "original", "false", 8),
             ("workflow_dispatch", "aarch64-apple-darwin", "original", "false", 1),
             ("workflow_dispatch", "x86_64-apple-darwin", "original", "false", 1),
+            ("workflow_dispatch", "x86_64-apple-darwin", "all", "true", 2),
         ):
             with self.subTest(event=event, platform=platform, enabled=enabled), tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp) / "output"
@@ -62,8 +65,13 @@ class DarwinWorkflowTests(unittest.TestCase):
                 self.assertEqual(len({(item["target"], item["language"])
                                       for item in matrix["include"]}), expected_count)
                 languages = {item["language"] for item in matrix["include"]}
-                self.assertEqual(languages, {"", "zh-CN"} if event == "schedule" and enabled == "true"
-                                 else {"zh-CN"} if requested == "zh-CN" and enabled == "true" else {""})
+                if enabled == "true" and (event == "schedule" or requested == "all"):
+                    expected_languages = {"", "zh-CN"}
+                elif enabled == "true" and requested == "zh-CN":
+                    expected_languages = {"zh-CN"}
+                else:
+                    expected_languages = {""}
+                self.assertEqual(languages, expected_languages)
                 if event == "schedule":
                     self.assertTrue(all(not item["target"].endswith("-apple-darwin")
                                         for item in matrix["include"]))
